@@ -34,8 +34,8 @@ units at boot (`Restart=on-failure`, timers). `wg0`, `sshd`, `net-watchdog.timer
    - **keystore**: nothing on disk; the launcher asks the AgentDriver app
      (`aohp secret get VAR`) which answers from the Android Keystore. Requires an app build
      whose `aohp connect` reports `features: ["secrets"]` (AOHPAgentDriverApp secret-store
-     patch + `aohp secret` CLI — see injinj/AOHPAgentDriverApp `pr/secret-store`,
-     injinj/aohp `pr/cli-secret`). Switch an existing setup with
+     patch + `aohp secret` CLI — see gramarye-os/AOHPAgentDriverApp `pr/secret-store`,
+     gramarye-os/aohp `pr/cli-secret`). Switch an existing setup with
      `aohp-secrets migrate keystore` (moves the keys, shreds `.env`).
    - **paste**: type each required variable once; written to `~/.openclaw/.env`.
 4. Runs `install/<agent>.sh` for each agent listed in your repo's `aohp/agents` file

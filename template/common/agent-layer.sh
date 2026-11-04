@@ -8,7 +8,7 @@
 # The aohp CLI and /opt/aohp-skills are COPY'd in by the Dockerfile before this runs (built in template/aohp-cli.Dockerfile).
 set -euo pipefail
 OPENCLAW_VERSION=${OPENCLAW_VERSION:-2026.9.6}
-AOHP_AGENTS_REPO=${AOHP_AGENTS_REPO:-https://github.com/injinj/aohp-agents.git}
+AOHP_AGENTS_REPO=${AOHP_AGENTS_REPO:-https://github.com/gramarye-os/aohp-agents.git}
 AOHP_AGENTS_REF=${AOHP_AGENTS_REF:-main}
 P=/tmp/provision
 log() { echo "[agent-layer] $*"; }
@@ -46,7 +46,7 @@ cp -r /opt/aohp-skills/. /root/.openclaw/workspace/skills/     # same skills the
 log "versions"
 NODE_OPTIONS="--jitless" openclaw --version
 aohp --help | grep -q '^ *secret' || { echo "aohp CLI lacks the 'secret' subcommand" >&2; exit 1; }
-aohp --help | grep -q '^ *unit' || { echo "aohp CLI lacks the 'unit' subcommand (need injinj/aohp feat/units)" >&2; exit 1; }
+aohp --help | grep -q '^ *unit' || { echo "aohp CLI lacks the 'unit' subcommand (need gramarye-os/aohp feat/units)" >&2; exit 1; }
 test "$(command -v systemctl)" = /usr/local/bin/systemctl || { echo "systemctl shim not first on PATH" >&2; exit 1; }
 test -L /etc/aohp/system/aohp.target.wants/openclaw-gateway.service
 aohp --version 2>/dev/null || true
