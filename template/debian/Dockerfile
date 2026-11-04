@@ -6,7 +6,7 @@ FROM --platform=$BUILDPLATFORM $AOHP_CLI_IMAGE AS aohp-cli
 FROM docker.io/library/debian:trixie-slim
 ARG NODE_VERSION=v24.21.0
 ARG OPENCLAW_VERSION=2026.9.6
-ARG AOHP_AGENTS_REPO=https://github.com/injinj/aohp-agents.git
+ARG AOHP_AGENTS_REPO=https://github.com/gramarye-os/aohp-agents.git
 ARG AOHP_AGENTS_REF=main
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
 

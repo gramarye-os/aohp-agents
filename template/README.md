@@ -14,7 +14,7 @@ Every template contains the same agent layer: official glibc Node (nodejs.org ta
 (strips the `--jitless` that containerd injects, exports `SHELL=/bin/bash`, loads secrets), the keyless default
 config [`common/openclaw-default.json`](common/openclaw-default.json) as `/root/.openclaw/openclaw.json`, the AOHP
 workspace ([`common/workspace/AGENTS.md`](common/workspace/AGENTS.md) + the aohp skills), the `aohp` CLI with the
-`secret` subcommand (built from [injinj/aohp](https://github.com/injinj/aohp) `feat/cli-secret` in
+`secret` subcommand (built from [gramarye-os/aohp](https://github.com/gramarye-os/aohp) `feat/cli-secret` in
 [`aohp-cli.Dockerfile`](aohp-cli.Dockerfile)), `/opt/aohp-skills`, and this repo cloned to `/opt/aohp-agents`
 (`aohp-bootstrap`, `aohp-secrets`, `aohp-update`, `age-pass` on PATH). Plus a dev toolchain: gcc/g++, make, cmake,
 gdb, strace, git, python3 + pip, jq, sqlite, gh, age, curl, wget, ssh client, nano, less, zip/unzip, iproute2.
@@ -65,7 +65,7 @@ The script builds the CLI image once (native platform), then `podman build --pla
 ## Publish
 
 ```bash
-gh release create templates-$(date +%Y%m%d) --repo injinj/aohp-agents --title "rootfs templates $(date +%F)" \
+gh release create templates-$(date +%Y%m%d) --repo gramarye-os/aohp-agents --title "rootfs templates $(date +%F)" \
   --notes-file notes.md template/dist/*.tar.gz template/dist/SHA256SUMS
 ```
 Consumers: `vendor/aohp/fetch-prebuilts.sh` in the Lineage tree downloads `debian-arm64.tar.gz` (and optionally

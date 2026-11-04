@@ -8,7 +8,7 @@ Linux box (`Restart=on-failure`, ordering, timers), with a `systemctl` shim so h
 scripts keep working.
 
 Full specification (supported keys, states, protocol): aohp-driver
-[docs/UNITS.md](https://github.com/injinj/aohp-driver/blob/master/docs/UNITS.md).
+[docs/UNITS.md](https://github.com/gramarye-os/aohp-driver/blob/master/docs/UNITS.md).
 
 ## What the template ships (`/opt/aohp-agents/units/` → `/etc/aohp/system/`)
 
