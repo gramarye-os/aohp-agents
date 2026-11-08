@@ -12,6 +12,9 @@
 #                                  bootstrap token in the fragment (#bootstrapToken=…, read by the Control UI, never
 #                                  sent to the server). Scan it on a laptop -> Control UI -> pending device -> Allow.
 #   aohp-gateway token             the shared gateway.auth token (for the manual login page); from the keystore
+#   aohp-gateway cert [show]       JSON {cn, names, ips, notAfter, covers, missing}: what the serving cert is valid for
+#   aohp-gateway cert regen [name] new self-signed cert, SAME key, CN=name, SANs = name, name.local, localhost and every
+#                                  current non-cell address (wlan0/wg0/tailscale v4+v6); the gateway reloads it in ~1 s
 #
 # Everything talks to the gateway over loopback with the CLI's own auth (gateway.auth.token resolved
 # from the env, see aohp-secrets). Exit: 0 ok; 1 usage; 2 gateway not reachable; 3 cli error.
@@ -28,14 +31,31 @@ fingerprint(){
 }
 tls_on(){ [ "$(openclaw config get gateway.tls.enabled 2>/dev/null)" = true ]; }
 addrs(){ ip -4 -o addr 2>/dev/null | awk '$2!="lo" && $2!~/^rmnet/ {split($4,a,"/"); print $2, a[1]}'; }
+# every address a browser could reach us on: v4 + global v6, never lo or the cell interfaces (CGNAT / global v6 we do not serve on)
+all_ips(){ ip -o addr 2>/dev/null | awk '$2!="lo" && $2!~/^rmnet/ && ($3=="inet" || ($3=="inet6" && $4!~/^fe80/)) {split($4,a,"/"); print a[1]}'; }
+cert_json(){  # {cn, names, ips, notAfter, covers, missing} for the serving cert, or null
+  local c=$TLSDIR/gateway-cert.pem; [ -f "$c" ] || { echo null; return; }
+  python3 - "$(openssl x509 -in "$c" -noout -subject -enddate -ext subjectAltName 2>/dev/null)" "$(all_ips)" <<'PY'
+import json, sys, re, ipaddress
+def norm(a):
+    try: return str(ipaddress.ip_address(a))   # openssl prints v6 expanded/uppercase, ip(8) compressed
+    except ValueError: return a
+txt, cur = sys.argv[1], [norm(a) for a in sys.argv[2].split()]
+m = re.search(r'CN\s*=\s*([^,/\n]+)', txt); cn = m.group(1).strip() if m else ''
+m = re.search(r'notAfter=(.*)', txt); na = m.group(1).strip() if m else ''
+names = re.findall(r'DNS:([^,\s]+)', txt); ips = [norm(a) for a in re.findall(r'IP Address:([^,\s]+)', txt)]
+missing = [i for i in cur if i not in ips]
+print(json.dumps({'cn': cn, 'names': names, 'ips': ips, 'notAfter': na, 'covers': not missing, 'missing': missing}))
+PY
+}
 
 case "${1:-}" in
   status)
     fp=$(fingerprint); scheme=$(tls_on && echo https || echo http)
     dev=$(oc devices list --json 2>/dev/null); [ -n "$dev" ] || dev='{}'
-    python3 - "$scheme" "$PORT" "$fp" "$(openclaw config get gateway.bind 2>/dev/null | tr -d '"')" "$(openclaw config get gateway.auth.mode 2>/dev/null | tr -d '"')" "$dev" "$(addrs)" <<'PY'
+    python3 - "$scheme" "$PORT" "$fp" "$(openclaw config get gateway.bind 2>/dev/null | tr -d '"')" "$(openclaw config get gateway.auth.mode 2>/dev/null | tr -d '"')" "$dev" "$(addrs)" "$(cert_json)" <<'PY'
 import json, sys
-scheme, port, fp, bind, auth, dev, addrs = sys.argv[1:8]
+scheme, port, fp, bind, auth, dev, addrs, cert = sys.argv[1:9]
 try: d = json.loads(dev)
 except Exception: d = {}
 urls = []
@@ -55,7 +75,8 @@ def strip(p):
     q['host'] = host_of(q.get('remoteIp'))
     return q
 print(json.dumps({'tls': scheme == 'https', 'fingerprint': fp or None, 'bind': bind or 'loopback', 'auth': auth or 'none', 'port': int(port),
-                  'urls': urls, 'pending': [strip(p) for p in d.get('pending', [])], 'paired': [strip(p) for p in d.get('paired', [])]}))
+                  'urls': urls, 'pending': [strip(p) for p in d.get('pending', [])], 'paired': [strip(p) for p in d.get('paired', [])],
+                  'cert': json.loads(cert or 'null')}))
 PY
     ;;
   fingerprint) fp=$(fingerprint); [ -n "$fp" ] && echo "$fp" || { echo 'TLS is off (no certificate)' >&2; exit 3; } ;;
@@ -83,5 +104,23 @@ print(json.dumps({"url": f"{scheme}://{ip}:{port}/#bootstrapToken={urllib.parse.
 PY
     ;;
   token) aohp secret get GATEWAY_AUTH_TOKEN 2>/dev/null || die 'no GATEWAY_AUTH_TOKEN in the keystore' ;;
+  cert)
+    case "${2:-}" in
+      ""|show) cert_json ;;
+      regen)
+        # OpenClaw's autoGenerate cert is CN=openclaw-gateway with no subjectAltName, so no browser can ever match it to
+        # a host. Re-issue on the same key naming this phone and its addresses; the gateway's watchFile picks the new
+        # file up without a restart (server-tls-renewal.ts). The fingerprint changes: pins must be re-accepted.
+        name=$(printf '%s' "${3:-$(cat /etc/hostname 2>/dev/null)}" | tr 'A-Z' 'a-z' | tr -d ' ' | tr -c 'a-z0-9-' '-' | sed 's/^-*//; s/-*$//'); [ -n "$name" ] || name=aohp
+        san="DNS:$name,DNS:$name.local,DNS:localhost,IP:127.0.0.1"; for ip in $(all_ips); do san="$san,IP:$ip"; done
+        mkdir -p "$TLSDIR" && chmod 700 "$TLSDIR"
+        [ -f "$TLSDIR/gateway-key.pem" ] || (umask 077; openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$TLSDIR/gateway-key.pem" 2>/dev/null) || die 'could not generate a key'
+        (umask 077; openssl req -x509 -new -key "$TLSDIR/gateway-key.pem" -subj "/CN=$name" -days 3650 -addext "subjectAltName=$san" \
+            -addext 'basicConstraints=critical,CA:FALSE' -addext 'extendedKeyUsage=serverAuth' -addext 'keyUsage=digitalSignature,keyEncipherment' \
+            -out "$TLSDIR/gateway-cert.pem.new" 2>/dev/null) || { rm -f "$TLSDIR/gateway-cert.pem.new"; die 'openssl req failed'; }
+        mv -f "$TLSDIR/gateway-cert.pem.new" "$TLSDIR/gateway-cert.pem"
+        cert_json ;;
+      *) die 'cert [show|regen [name]]' ;;
+    esac ;;
   *) sed -n '2,11p' "$0"; exit 1 ;;
 esac
