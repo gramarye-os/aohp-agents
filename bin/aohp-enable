@@ -1,0 +1,147 @@
+#!/bin/bash
+# aohp-enable — make a broker-stored provider key usable by the OpenClaw gateway in this env.
+#
+#   aohp-enable <provider> [--default] [--dry-run]     enable (model provider or web-search provider)
+#   aohp-enable <provider> --disable                   remove it from the gateway config
+#   aohp-enable --status                               JSON: per catalog provider {stored, enabled}
+#
+# What 'enable' does (the procedure proven by hand on dodge, 2026-11-07):
+#   1. the key must already be stored in the Driver's broker and granted to this env (Keys tab);
+#   2. its env var is added to ~/.openclaw/secrets/required when that file exists (explicit list wins
+#      over the catalog-derived one);
+#   3. openclaw.json is patched in ONE validated write (openclaw config patch): for a model provider
+#      models.providers.<id> = { apiKey: "${VAR}", + the catalog's 'openclaw' block (baseUrl/models) when
+#      the provider has no plugin }, and <id>/* is appended to agents.defaults.modelPolicy.allow (arrays
+#      replace, so the whole list is written); for a search provider plugins.entries.<id>.enabled=true and
+#      plugins.entries.<id>.config.webSearch.apiKey="${VAR}". ${VAR} SecretRefs are resolved at patch time,
+#      so the key is fetched from the broker into this command's environment for the write only;
+#   4. the gateway unit is restarted (config.patch's own restart does not fire under aohp units), the
+#      launcher wrapper re-runs aohp-secrets env, and the key reaches the gateway via the broker;
+#   5. verified: openclaw models list --provider <id> shows Auth yes.
+# Exit: 0 ok; 1 usage/precondition; 3 no grant; 4 broker unreachable; 5 patch failed; 6 verify failed.
+set -u
+CAT=${AOHP_PROVIDERS:-/opt/aohp-agents/providers.json}
+ENVNAME=${AOHP_ENV:-$(cat /etc/aohp/env-name 2>/dev/null || hostname)}
+UNIT=${AOHP_GATEWAY_UNIT:-openclaw-gateway.service}
+REQ=${AOHP_SECRETS_REQUIRED:-$HOME/.openclaw/secrets/required}
+die(){ echo "aohp-enable: $*" >&2; exit 1; }
+[ -f "$CAT" ] || die "catalog missing: $CAT"
+
+# ---- --status ------------------------------------------------------------------------------------
+if [ "${1:-}" = --status ]; then
+  stored=$(cred-list 2>/dev/null | awk 'NR>1{print $1}' | tr '\n' ' ')
+  cfg=$(openclaw config get models.providers 2>/dev/null); plug=$(openclaw config get plugins.entries 2>/dev/null)
+  python3 - "$CAT" "$stored" "$cfg" "$plug" <<'PY'
+import json, sys
+cat = json.load(open(sys.argv[1])); stored = set(sys.argv[2].split())
+def load(s):
+    try: return json.loads(s)
+    except Exception: return {}
+prov = load(sys.argv[3]); plug = load(sys.argv[4])
+out = {}
+for p in cat['providers']:
+    pid = p['id']
+    if p.get('kind') == 'search': enabled = bool((plug.get(pid) or {}).get('enabled'))
+    else: enabled = pid in prov
+    out[pid] = {'stored': pid in stored, 'enabled': enabled, 'env': p['env']}
+print(json.dumps(out))
+PY
+  exit 0
+fi
+
+# ---- args ----------------------------------------------------------------------------------------
+P=${1:-}; [ -n "$P" ] || { sed -n '2,7p' "$0"; exit 1; }; shift
+DEFAULT=0; DRY=0; DISABLE=0
+for a in "$@"; do case $a in --default) DEFAULT=1;; --dry-run) DRY=1;; --disable) DISABLE=1;; *) die "unknown option $a";; esac; done
+ENTRY=$(python3 -c 'import json,sys
+for p in json.load(open(sys.argv[1]))["providers"]:
+    if p["id"]==sys.argv[2]: print(json.dumps(p)); break' "$CAT" "$P")
+[ -n "$ENTRY" ] || die "unknown provider '$P' (not in $CAT)"
+VAR=$(echo "$ENTRY" | python3 -c 'import json,sys;print(json.load(sys.stdin)["env"])')
+KIND=$(echo "$ENTRY" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("kind","model"))')
+
+# ---- --disable -----------------------------------------------------------------------------------
+if [ $DISABLE = 1 ]; then
+  allow=$(openclaw config get agents.defaults.modelPolicy.allow 2>/dev/null)
+  python3 - "$P" "$KIND" "$allow" > /tmp/aohp-enable.$$.json5 <<'PY'
+import json, sys
+pid, kind, allow = sys.argv[1], sys.argv[2], sys.argv[3]
+try: allow = json.loads(allow)
+except Exception: allow = []
+patch = {}
+if kind == 'search': patch = {'plugins': {'entries': {pid: {'enabled': False, 'config': {'webSearch': {'apiKey': None}}}}}}
+else: patch = {'models': {'providers': {pid: None}}, 'agents': {'defaults': {'modelPolicy': {'allow': [a for a in allow if a != pid + '/*']}}}}
+print(json.dumps(patch))
+PY
+  openclaw config patch --file /tmp/aohp-enable.$$.json5 --confirm-array-removal 2>&1 | grep -vE '^Config \(' | tail -3; rc=${PIPESTATUS[0]}
+  rm -f /tmp/aohp-enable.$$.json5; [ $rc = 0 ] || exit 5
+  aohp unit restart "$ENVNAME" "$UNIT" >/dev/null 2>&1; echo "disabled $P; gateway restarting"; exit 0
+fi
+
+# ---- 1. key from the broker (this proves the grant too) -----------------------------------------
+line=$(cred-get "$P" gateway_launch 2>/tmp/aohp-enable.$$.err); rc=$?
+if [ $rc != 0 ]; then
+  msg=$(cat /tmp/aohp-enable.$$.err); rm -f /tmp/aohp-enable.$$.err
+  case $rc in
+    3) echo "aohp-enable: env:$ENVNAME is not allowed to use '$P' — allow it in the Driver's Keys tab first ($msg)" >&2; exit 3;;
+    4) echo "aohp-enable: credential broker unreachable ($msg)" >&2; exit 4;;
+    *) echo "aohp-enable: no '$P' key stored — add it in the Driver's Keys tab first ($msg)" >&2; exit 1;;
+  esac
+fi
+rm -f /tmp/aohp-enable.$$.err
+VALUE=$(printf '%s' "$line" | cut -f2 | sed 's/^Bearer //')
+[ -n "$VALUE" ] || die "empty credential for $P"
+
+# ---- 2. launch list ------------------------------------------------------------------------------
+if [ -f "$REQ" ] && ! grep -qx "$VAR" "$REQ"; then [ $DRY = 1 ] || echo "$VAR" >> "$REQ"; echo "required: + $VAR"; fi
+
+# ---- 3. patch ------------------------------------------------------------------------------------
+allow=$(openclaw config get agents.defaults.modelPolicy.allow 2>/dev/null)
+own=$(openclaw config get agents.ownership 2>/dev/null)
+entries=$(openclaw config get agents.entries 2>/dev/null)
+python3 - "$ENTRY" "$VAR" "$allow" "$own" "$entries" "$DEFAULT" > /tmp/aohp-enable.$$.json5 <<'PY'
+import json, sys
+e = json.loads(sys.argv[1]); var = sys.argv[2]; pid = e['id']
+def load(s, d):
+    try: return json.loads(s)
+    except Exception: return d
+allow = load(sys.argv[3], ['anthropic/*']); own = load(sys.argv[4], None); entries = load(sys.argv[5], {}); default = sys.argv[6] == '1'
+ref = '${' + var + '}'
+patch = {}
+if e.get('kind') == 'search':
+    patch['plugins'] = {'entries': {pid: {'enabled': True, 'config': {'webSearch': {'apiKey': ref}}}}}
+else:
+    block = dict(e.get('openclaw') or {}); block['apiKey'] = ref
+    patch['models'] = {'providers': {pid: block}}
+    agents = {'defaults': {}}
+    if pid + '/*' not in allow: agents['defaults']['modelPolicy'] = {'allow': allow + [pid + '/*']}
+    if default:
+        models = (e.get('openclaw') or {}).get('models') or []
+        if not models: sys.exit('--default needs an openclaw.models list in the catalog entry for ' + pid)
+        agents['defaults']['model'] = {'primary': pid + '/' + models[0]['id']}
+    if isinstance(entries, dict) and len(entries) > 1 and own is None: agents['ownership'] = 'explicit'   # pre-existing invalidity fix
+    if agents['defaults'] or 'ownership' in agents: patch['agents'] = agents
+print(json.dumps(patch, indent=1))
+PY
+[ $? = 0 ] || { rm -f /tmp/aohp-enable.$$.json5; exit 1; }
+export "$VAR=$VALUE"
+out=$(openclaw config patch --dry-run --file /tmp/aohp-enable.$$.json5 2>&1 | grep -vE '^Config \(')
+if echo "$out" | grep -qiE 'failed|error'; then echo "$out" | tail -6 >&2; rm -f /tmp/aohp-enable.$$.json5; exit 5; fi
+if [ $DRY = 1 ]; then echo "--- would patch:"; cat /tmp/aohp-enable.$$.json5 | sed "s/$VALUE/…/g"; rm -f /tmp/aohp-enable.$$.json5; exit 0; fi
+openclaw config patch --file /tmp/aohp-enable.$$.json5 2>&1 | grep -vE '^Config \(' | tail -2; rc=${PIPESTATUS[0]}
+rm -f /tmp/aohp-enable.$$.json5; unset "$VAR"
+[ $rc = 0 ] || exit 5
+
+# ---- 4. restart + 5. verify ---------------------------------------------------------------------
+aohp unit restart "$ENVNAME" "$UNIT" >/dev/null 2>&1 || die "could not restart $UNIT in env $ENVNAME"
+for i in $(seq 1 30); do sleep 1; p=$(pgrep -f '^openclaw-gateway' | head -1); [ -n "$p" ] && [ "$(ps -o etimes= -p "$p" | tr -d ' ')" -lt 30 ] && break; done
+if [ "$KIND" = search ]; then
+  openclaw config get plugins.entries."$P".enabled 2>/dev/null | grep -q true && { echo "enabled $P (web search); gateway restarted"; exit 0; }
+  echo "aohp-enable: $P not enabled after patch" >&2; exit 6
+fi
+for i in $(seq 1 10); do
+  auth=$(openclaw models list --provider "$P" 2>/dev/null | awk -v p="$P/" 'index($1,p)==1{print $5; exit}')
+  [ "$auth" = yes ] && { echo "enabled $P: gateway restarted, auth ok$([ $DEFAULT = 1 ] && echo ', default model set')"; exit 0; }
+  sleep 2
+done
+echo "aohp-enable: $P configured but auth not confirmed (gateway still starting? check: openclaw models list --provider $P)" >&2; exit 6
