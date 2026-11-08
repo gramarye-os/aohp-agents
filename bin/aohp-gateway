@@ -8,6 +8,10 @@
 #   aohp-gateway reject <id> | remove <id> | rename <id> <label>
 #   aohp-gateway pair-url [iface]  https URL + fingerprint for a browser (default: wg0, else first LAN)
 #   aohp-gateway setup-code        single-use OpenClaw mobile-app setup code (openclaw qr)
+#   aohp-gateway pair-code [iface]  JSON {url, expiresAtMs, fingerprint}: an https URL carrying a 10-minute
+#                                  bootstrap token in the fragment (#bootstrapToken=…, read by the Control UI, never
+#                                  sent to the server). Scan it on a laptop -> Control UI -> pending device -> Allow.
+#   aohp-gateway token             the shared gateway.auth token (for the manual login page); from the keystore
 #
 # Everything talks to the gateway over loopback with the CLI's own auth (gateway.auth.token resolved
 # from the env, see aohp-secrets). Exit: 0 ok; 1 usage; 2 gateway not reachable; 3 cli error.
@@ -53,5 +57,19 @@ PY
     [ -n "$ip" ] || die 'no non-loopback address'
     printf '%s://%s:%s\n' "$(tls_on && echo https || echo http)" "$ip" "$PORT"; fp=$(fingerprint); [ -n "$fp" ] && echo "cert sha256 $fp" ;;
   setup-code) oc qr --setup-code-only ;;
+  pair-code)
+    want=${2:-wlan0}; ip=$(addrs | awk -v w="$want" '$1==w{print $2; exit}'); [ -n "$ip" ] || ip=$(addrs | awk '{print $2; exit}')
+    [ -n "$ip" ] || die 'no non-loopback address'
+    sc=$(oc qr --setup-code-only 2>/dev/null | tail -1); [ -n "$sc" ] || die 'could not mint a setup code (gateway up?)'
+    python3 - "$sc" "$ip" "$PORT" "$(tls_on && echo https || echo http)" "$(fingerprint)" "$want" <<'PY'
+import sys, json, base64, urllib.parse
+sc, ip, port, scheme, fp, want = sys.argv[1:7]
+p = json.loads(base64.urlsafe_b64decode(sc + "=" * (-len(sc) % 4)))
+tok = p.get("bootstrapToken") or ""
+if not tok: sys.exit("setup code has no bootstrapToken")
+print(json.dumps({"url": f"{scheme}://{ip}:{port}/#bootstrapToken={urllib.parse.quote(tok, safe='')}", "expiresAtMs": p.get("expiresAtMs"), "fingerprint": fp or None, "iface": want}))
+PY
+    ;;
+  token) aohp secret get GATEWAY_AUTH_TOKEN 2>/dev/null || die 'no GATEWAY_AUTH_TOKEN in the keystore' ;;
   *) sed -n '2,11p' "$0"; exit 1 ;;
 esac
