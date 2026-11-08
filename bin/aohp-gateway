@@ -42,8 +42,20 @@ urls = []
 for line in addrs.splitlines():
     iface, ip = line.split()
     urls.append({'iface': iface, 'url': f'{scheme}://{ip}:{port}'})
+import subprocess
+def host_of(ip):
+    """Best-effort reverse lookup (LAN DNS / hosts); '' when unknown. Capped at 1 s so status stays fast."""
+    if not ip: return ''
+    try:
+        out = subprocess.run(['getent', 'hosts', ip], capture_output=True, text=True, timeout=1).stdout.split()
+        return out[1] if len(out) > 1 and out[1] != ip else ''
+    except Exception: return ''
+def strip(p):
+    q = {k: v for k, v in p.items() if k not in ('publicKey', 'tokens')}
+    q['host'] = host_of(q.get('remoteIp'))
+    return q
 print(json.dumps({'tls': scheme == 'https', 'fingerprint': fp or None, 'bind': bind or 'loopback', 'auth': auth or 'none', 'port': int(port),
-                  'urls': urls, 'pending': d.get('pending', []), 'paired': [{k: v for k, v in p.items() if k not in ('publicKey', 'tokens')} for p in d.get('paired', [])]}))
+                  'urls': urls, 'pending': [strip(p) for p in d.get('pending', [])], 'paired': [strip(p) for p in d.get('paired', [])]}))
 PY
     ;;
   fingerprint) fp=$(fingerprint); [ -n "$fp" ] && echo "$fp" || { echo 'TLS is off (no certificate)' >&2; exit 3; } ;;
