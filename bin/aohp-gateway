@@ -1,0 +1,57 @@
+#!/bin/bash
+# aohp-gateway — the OpenClaw gateway's network face for the Driver's Network card (and humans).
+#
+#   aohp-gateway status            JSON: tls, fingerprint, bind, urls per interface, pending/paired counts
+#   aohp-gateway fingerprint       SHA-256 of the serving cert (what a browser should be told to expect)
+#   aohp-gateway devices           JSON {pending:[…], paired:[…]} (openclaw devices list --json)
+#   aohp-gateway approve [id]      approve a pending browser/app pairing (default: most recent)
+#   aohp-gateway reject <id> | remove <id> | rename <id> <label>
+#   aohp-gateway pair-url [iface]  https URL + fingerprint for a browser (default: wg0, else first LAN)
+#   aohp-gateway setup-code        single-use OpenClaw mobile-app setup code (openclaw qr)
+#
+# Everything talks to the gateway over loopback with the CLI's own auth (gateway.auth.token resolved
+# from the env, see aohp-secrets). Exit: 0 ok; 1 usage; 2 gateway not reachable; 3 cli error.
+set -u
+export GIT_TERMINAL_PROMPT=0
+PORT=$(openclaw config get gateway.port 2>/dev/null | tr -dc 0-9); PORT=${PORT:-18789}
+TLSDIR=$HOME/.openclaw/gateway/tls
+die(){ echo "aohp-gateway: $*" >&2; exit 1; }
+oc(){ openclaw "$@" 2>&1 | grep -vE '^Config \('; return ${PIPESTATUS[0]}; }
+
+fingerprint(){
+  local c=$(openclaw config get gateway.tls.certPath 2>/dev/null | tr -d '"'); [ -f "$c" ] || c=$TLSDIR/gateway-cert.pem
+  [ -f "$c" ] && openssl x509 -in "$c" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2
+}
+tls_on(){ [ "$(openclaw config get gateway.tls.enabled 2>/dev/null)" = true ]; }
+addrs(){ ip -4 -o addr 2>/dev/null | awk '$2!="lo" && $2!~/^rmnet/ {split($4,a,"/"); print $2, a[1]}'; }
+
+case "${1:-}" in
+  status)
+    fp=$(fingerprint); scheme=$(tls_on && echo https || echo http)
+    dev=$(oc devices list --json 2>/dev/null); [ -n "$dev" ] || dev='{}'
+    python3 - "$scheme" "$PORT" "$fp" "$(openclaw config get gateway.bind 2>/dev/null | tr -d '"')" "$(openclaw config get gateway.auth.mode 2>/dev/null | tr -d '"')" "$dev" "$(addrs)" <<'PY'
+import json, sys
+scheme, port, fp, bind, auth, dev, addrs = sys.argv[1:8]
+try: d = json.loads(dev)
+except Exception: d = {}
+urls = []
+for line in addrs.splitlines():
+    iface, ip = line.split()
+    urls.append({'iface': iface, 'url': f'{scheme}://{ip}:{port}'})
+print(json.dumps({'tls': scheme == 'https', 'fingerprint': fp or None, 'bind': bind or 'loopback', 'auth': auth or 'none', 'port': int(port),
+                  'urls': urls, 'pending': d.get('pending', []), 'paired': [{k: v for k, v in p.items() if k not in ('publicKey', 'tokens')} for p in d.get('paired', [])]}))
+PY
+    ;;
+  fingerprint) fp=$(fingerprint); [ -n "$fp" ] && echo "$fp" || { echo 'TLS is off (no certificate)' >&2; exit 3; } ;;
+  devices) oc devices list --json ;;
+  approve) shift; if [ -n "${1:-}" ]; then oc devices approve "$1"; else oc devices approve --latest; fi ;;
+  reject)  [ -n "${2:-}" ] || die 'reject <deviceId>'; oc devices reject "$2" ;;
+  remove)  [ -n "${2:-}" ] || die 'remove <deviceId>'; oc devices remove "$2" ;;
+  rename)  [ -n "${3:-}" ] || die 'rename <deviceId> <label>'; oc devices rename "$2" "$3" ;;
+  pair-url)
+    want=${2:-wg0}; ip=$(addrs | awk -v w="$want" '$1==w{print $2; exit}'); [ -n "$ip" ] || ip=$(addrs | awk '{print $2; exit}')
+    [ -n "$ip" ] || die 'no non-loopback address'
+    printf '%s://%s:%s\n' "$(tls_on && echo https || echo http)" "$ip" "$PORT"; fp=$(fingerprint); [ -n "$fp" ] && echo "cert sha256 $fp" ;;
+  setup-code) oc qr --setup-code-only ;;
+  *) sed -n '2,11p' "$0"; exit 1 ;;
+esac
