@@ -25,7 +25,7 @@ export GIT_TERMINAL_PROMPT=0
 short() { git -C "$1" rev-parse --short HEAD 2>/dev/null; }
 # remote tip of the checkout's branch (ls-remote: no refs written); empty on network/auth failure
 remote_tip() { local b; b=$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
-  timeout 10 git -C "$1" ls-remote -q origin "refs/heads/$b" 2>/dev/null | cut -c1-7; }
+  timeout 10 gitc -C "$1" ls-remote -q origin "refs/heads/$b" 2>/dev/null | cut -c1-7; }
 # github token into GH_TOKEN; prints where it came from. An ssh:// or git@ remote uses the deploy key
 # in ~/.ssh and needs no token at all (that is how the phones are bootstrapped), so report "ssh".
 remote_is_ssh() { case "$(git -C "$1" remote get-url origin 2>/dev/null)" in https://*|http://*) return 1;; *) return 0;; esac; }
@@ -37,6 +37,8 @@ gh_source() {
   elif gh auth status >/dev/null 2>&1; then echo gh
   else echo none; fi
 }
+# git over https with GH_TOKEN, independent of ~/.gitconfig and of gh: an inline credential helper.
+gitc() { if [ -n "${GH_TOKEN:-}" ]; then git -c credential.helper= -c 'credential.helper=!f(){ printf "username=x-access-token\npassword=%s\n" "$GH_TOKEN"; }; f' "$@"; else git "$@"; fi; }
 stale_bins() { local f; for f in $BINS; do [ -f "$AGENTS_DIR/bin/$f" ] && ! cmp -s "$AGENTS_DIR/bin/$f" "$BIN/$f" && printf '%s\n' "$f"; done; return 0; }
 record() { mkdir -p "$STATE"; python3 - "$1" "$2" "$3" "$4" > "$STATE/last.json" <<'PY'
 import json,sys,datetime
@@ -59,9 +61,9 @@ if [ "${1:-}" = status ]; then
     if [ -z "$c_remote" ]; then
       if [ "$src" = none ]; then c_err="no GitHub token: grant GITHUB_TOKEN to this env in the Driver's Keys tab"
       elif [ "$src" = ssh ]; then c_err="ssh to origin failed ($(timeout 10 git -C "$OC_DIR" ls-remote -q origin HEAD 2>&1 >/dev/null | tail -1 | cut -c1-120))"
-      else c_err="cannot reach origin ($(timeout 10 git -C "$OC_DIR" ls-remote -q origin HEAD 2>&1 >/dev/null | tail -1 | cut -c1-120))"; fi
+      else c_err="cannot reach origin ($(timeout 10 gitc -C "$OC_DIR" ls-remote -q origin HEAD 2>&1 >/dev/null | tail -1 | cut -c1-120))"; fi
     elif [ "$c_remote" != "$c_local" ]; then
-      c_behind=$(timeout 20 git -C "$OC_DIR" fetch -q origin 2>/dev/null && git -C "$OC_DIR" rev-list --count "HEAD..$c_remote" 2>/dev/null || echo "")
+      c_behind=$(timeout 20 gitc -C "$OC_DIR" fetch -q origin 2>/dev/null && git -C "$OC_DIR" rev-list --count "HEAD..$c_remote" 2>/dev/null || echo "")
     fi
   fi
   python3 - "$AGENTS_DIR" "$a_local" "$a_remote" "$a_behind" "$(stale_bins | tr '\n' ' ')" \
@@ -99,7 +101,7 @@ for f in $BINS; do [ -f "$AGENTS_DIR/bin/$f" ] && install -m 755 "$AGENTS_DIR/bi
 install -m 755 "$AGENTS_DIR/bootstrap.sh" "$BIN/aohp-bootstrap"
 if [ -d "$OC_DIR/.git" ]; then
   src=$(gh_source)
-  if git -C "$OC_DIR" pull -q --ff-only; then c_msg="config $(short "$OC_DIR")"
+  if gitc -C "$OC_DIR" pull -q --ff-only; then c_msg="config $(short "$OC_DIR")"
   else
     if [ "$src" = none ]; then c_msg="config: pull failed, no GitHub token (grant GITHUB_TOKEN to this env in the Driver's Keys tab)"
     elif [ "$src" = ssh ]; then c_msg="config: pull failed over ssh (deploy key in ~/.ssh?)"
