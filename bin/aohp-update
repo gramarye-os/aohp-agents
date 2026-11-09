@@ -32,7 +32,8 @@ remote_is_ssh() { case "$(git -C "$1" remote get-url origin 2>/dev/null)" in htt
 gh_source() {
   if [ -d "$OC_DIR/.git" ] && remote_is_ssh "$OC_DIR"; then echo ssh
   elif [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then export GH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"; echo env
-  elif t=$(timeout 15 cred-get github 2>/dev/null) && [ -n "$t" ]; then export GH_TOKEN="$t"; echo broker
+  # cred-get prints the HTTP header ("authorization<TAB>Bearer <token>"); the token is the last field.
+  elif t=$(timeout 15 cred-get github 2>/dev/null | awk '{print $NF}') && [ -n "$t" ]; then export GH_TOKEN="$t"; echo broker
   elif gh auth status >/dev/null 2>&1; then echo gh
   else echo none; fi
 }
