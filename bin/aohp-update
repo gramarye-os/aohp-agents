@@ -43,7 +43,8 @@ gh_source() {
     GITC=(-c credential.helper= -c 'credential.helper=!f(){ printf "username=x-access-token\npassword=%s\n" "$GH_TOKEN"; }; f')
   fi
 }
-dirty_files() { git -C "$1" status --porcelain 2>/dev/null | awk '{print $2}' | tr '\n' ' '; }
+# tracked files with local modifications (untracked files never block a fast-forward)
+dirty_files() { git -C "$1" status --porcelain --untracked-files=no 2>/dev/null | awk '{print $2}' | tr '\n' ' '; }
 stale_bins() { local f; for f in $BINS; do [ -f "$AGENTS_DIR/bin/$f" ] && ! cmp -s "$AGENTS_DIR/bin/$f" "$BIN/$f" && printf '%s\n' "$f"; done; return 0; }
 record() { mkdir -p "$STATE"; python3 - "$1" "$2" "$3" "$4" > "$STATE/last.json" <<'PY'
 import json,sys,datetime

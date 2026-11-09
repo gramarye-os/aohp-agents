@@ -10,6 +10,7 @@ if [ -z "$cur" ] || [ "$VER" != latest -a "$cur" != "$VER" ] || [ "${OPENCLAW_UP
 else log "openclaw $cur present"; fi
 [ -f /usr/local/bin/openclaw.real ] || { f=$(readlink -f /usr/local/bin/openclaw); mv -f "$f" /usr/local/bin/openclaw.real 2>/dev/null || true; }
 bash "$(dirname "$0")/patch-openclaw-pidns.sh"   # >= 2026.11 needs /proc/self/ns/pid, absent in the container; see the script
+bash "$(dirname "$0")/patch-openclaw-issuer.sh"  # QR/device-key browser pairings survive gateway restarts (upstream PR 195660)
 log "launcher wrapper -> /usr/local/bin/openclaw"
 # Single source of truth for the wrapper: install/openclaw-wrapper.sh (also baked into the rootfs templates, see template/).
 install -m 755 "$(dirname "$0")/openclaw-wrapper.sh" /usr/local/bin/openclaw
