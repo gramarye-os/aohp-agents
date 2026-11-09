@@ -1,11 +1,110 @@
 #!/bin/bash
-# aohp-update — pull aohp-agents and the config repo, re-run installers.
-set -euo pipefail
+# aohp-update — pull aohp-agents and the config repo, re-run installers; or report what an update would do.
+#
+#   aohp-update            pull both repos, install bin/*, run the agent installers from <config>/aohp/agents.
+#                          Exit 0 ok; 1 when a pull failed (everything else still ran, so a broken config
+#                          pull never leaves the agents half-installed).
+#   aohp-update status     JSON for the Driver's Runtime card, no writes, ~2 s:
+#                            {agents:{dir,local,remote,behind,stale:[bin names not current in /usr/local/bin]},
+#                             config:{dir,repo,local,remote,behind,auth,error},
+#                             github:{source: broker|env|gh|none},
+#                             last:{at,ok,summary}}            — last = what the previous run recorded
+#
+# GitHub auth: the config repo is private. The token for its pull comes, in this order, from an existing
+# GH_TOKEN/GITHUB_TOKEN, else the Driver's credential broker (cred-get github — the Keys tab's GITHUB_TOKEN,
+# granted to this env), else gh's own login. It is exported as GH_TOKEN for this process only; git reaches
+# it through gh's credential helper (gh auth git-credential honours GH_TOKEN with no login). Nothing on disk.
+# Self-update: after pulling aohp-agents, a changed bin/aohp-update is installed and re-exec'd once, so one
+# run always installs the current file list (2026-11-08: a stale copy silently skipped aohp-gateway).
+set -uo pipefail
 AGENTS_DIR=${AOHP_AGENTS_DIR:-/opt/aohp-agents}; OC_DIR=${OPENCLAW_HOME:-$HOME/.openclaw}
-git -C "$AGENTS_DIR" pull -q --ff-only && echo "[update] aohp-agents $(git -C "$AGENTS_DIR" rev-parse --short HEAD)"
-install -m 755 "$AGENTS_DIR/bin/aohp-update" "$AGENTS_DIR/bin/aohp-secrets" "$AGENTS_DIR/bin/age-pass" "$AGENTS_DIR/bin/cred-get" "$AGENTS_DIR/bin/cred-set" "$AGENTS_DIR/bin/cred-list" "$AGENTS_DIR/bin/cred-providers" "$AGENTS_DIR/bin/aohp-enable" "$AGENTS_DIR/bin/aohp-gateway" /usr/local/bin/;
-  # Push the provider catalog to the Driver's credential broker (no-op off AOHP or before any grant exists).
-  [ -f "$AGENTS_DIR/providers.json" ] && /usr/local/bin/cred-providers --push "$AGENTS_DIR/providers.json" 2>/dev/null || true; install -m 755 "$AGENTS_DIR/bootstrap.sh" /usr/local/bin/aohp-bootstrap
-if [ -d "$OC_DIR/.git" ]; then git -C "$OC_DIR" pull -q --ff-only && echo "[update] config $(git -C "$OC_DIR" rev-parse --short HEAD)"; fi
+BIN=/usr/local/bin; STATE=/var/lib/aohp-update
+BINS="aohp-update aohp-secrets age-pass cred-get cred-set cred-list cred-providers aohp-enable aohp-gateway"
+export GIT_TERMINAL_PROMPT=0
+
+short() { git -C "$1" rev-parse --short HEAD 2>/dev/null; }
+# remote tip of the checkout's branch (ls-remote: no refs written); empty on network/auth failure
+remote_tip() { local b; b=$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
+  timeout 10 git -C "$1" ls-remote -q origin "refs/heads/$b" 2>/dev/null | cut -c1-7; }
+# github token into GH_TOKEN; prints where it came from
+gh_source() {
+  if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then export GH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"; echo env
+  elif t=$(timeout 15 cred-get github 2>/dev/null) && [ -n "$t" ]; then export GH_TOKEN="$t"; echo broker
+  elif gh auth status >/dev/null 2>&1; then echo gh
+  else echo none; fi
+}
+stale_bins() { local f; for f in $BINS; do [ -f "$AGENTS_DIR/bin/$f" ] && ! cmp -s "$AGENTS_DIR/bin/$f" "$BIN/$f" && printf '%s\n' "$f"; done; return 0; }
+record() { mkdir -p "$STATE"; python3 - "$1" "$2" "$3" "$4" > "$STATE/last.json" <<'PY'
+import json,sys,datetime
+ok,summary,agents,config=sys.argv[1:5]
+json.dump({"at":datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),"ok":ok=="0","summary":summary,"agents":agents,"config":config},sys.stdout)
+PY
+}
+
+# ---- status --------------------------------------------------------------------------------------
+if [ "${1:-}" = status ]; then
+  a_local=$(short "$AGENTS_DIR"); a_remote=$(remote_tip "$AGENTS_DIR"); a_behind=""
+  if [ -n "$a_remote" ] && [ "$a_remote" != "$a_local" ]; then
+    a_behind=$(timeout 20 git -C "$AGENTS_DIR" fetch -q origin 2>/dev/null && git -C "$AGENTS_DIR" rev-list --count "HEAD..$a_remote" 2>/dev/null || echo "")
+  fi
+  src=$(gh_source)
+  c_repo=""; c_local=""; c_remote=""; c_behind=""; c_err=""
+  if [ -d "$OC_DIR/.git" ]; then
+    c_repo=$(git -C "$OC_DIR" remote get-url origin 2>/dev/null | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')
+    c_local=$(short "$OC_DIR"); c_remote=$(remote_tip "$OC_DIR")
+    if [ -z "$c_remote" ]; then
+      if [ "$src" = none ]; then c_err="no GitHub token: grant GITHUB_TOKEN to this env in the Driver's Keys tab"
+      else c_err="cannot reach origin ($(timeout 10 git -C "$OC_DIR" ls-remote -q origin HEAD 2>&1 >/dev/null | tail -1 | cut -c1-120))"; fi
+    elif [ "$c_remote" != "$c_local" ]; then
+      c_behind=$(timeout 20 git -C "$OC_DIR" fetch -q origin 2>/dev/null && git -C "$OC_DIR" rev-list --count "HEAD..$c_remote" 2>/dev/null || echo "")
+    fi
+  fi
+  python3 - "$AGENTS_DIR" "$a_local" "$a_remote" "$a_behind" "$(stale_bins | tr '\n' ' ')" \
+            "$OC_DIR" "$c_repo" "$c_local" "$c_remote" "$c_behind" "$src" "$c_err" "$STATE/last.json" <<'PY'
+import json,sys,os
+(adir,al,ar,ab,stale,cdir,crepo,cl,cr,cb,src,cerr,lastf)=sys.argv[1:14]
+def n(s):
+    try: return int(s)
+    except ValueError: return None
+last=None
+if os.path.exists(lastf):
+    try: last=json.load(open(lastf))
+    except Exception: last=None
+out={"agents":{"dir":adir,"local":al,"remote":ar or None,"behind":n(ab) if ar else None,"stale":stale.split()},
+     "config":{"dir":cdir,"repo":crepo or None,"local":cl or None,"remote":cr or None,"behind":n(cb) if cr else None,
+               "auth":src,"error":cerr or None} if crepo else {"dir":cdir,"repo":None,"auth":src,"error":None},
+     "github":{"source":src},"last":last}
+print(json.dumps(out))
+PY
+  exit 0
+fi
+[ $# -eq 0 ] || { echo "usage: aohp-update [status]" >&2; exit 1; }
+
+# ---- update --------------------------------------------------------------------------------------
+rc=0; a_msg=""; c_msg=""
+if git -C "$AGENTS_DIR" pull -q --ff-only; then a_msg="aohp-agents $(short "$AGENTS_DIR")"; else a_msg="aohp-agents: pull failed (kept $(short "$AGENTS_DIR"))"; rc=1; fi
+echo "[update] $a_msg"
+if [ -z "${AOHP_UPDATE_REEXEC:-}" ] && ! cmp -s "$AGENTS_DIR/bin/aohp-update" "$BIN/aohp-update"; then
+  install -m 755 "$AGENTS_DIR/bin/aohp-update" "$BIN/" && echo "[update] aohp-update changed: re-running the new one"
+  AOHP_UPDATE_REEXEC=1 exec "$BIN/aohp-update" "$@"
+fi
+for f in $BINS; do [ -f "$AGENTS_DIR/bin/$f" ] && install -m 755 "$AGENTS_DIR/bin/$f" "$BIN/"; done
+# Push the provider catalog to the Driver's credential broker (no-op off AOHP or before any grant exists).
+[ -f "$AGENTS_DIR/providers.json" ] && "$BIN/cred-providers" --push "$AGENTS_DIR/providers.json" 2>/dev/null || true
+install -m 755 "$AGENTS_DIR/bootstrap.sh" "$BIN/aohp-bootstrap"
+if [ -d "$OC_DIR/.git" ]; then
+  src=$(gh_source)
+  if git -C "$OC_DIR" pull -q --ff-only; then c_msg="config $(short "$OC_DIR")"
+  else
+    if [ "$src" = none ]; then c_msg="config: pull failed, no GitHub token (grant GITHUB_TOKEN to this env in the Driver's Keys tab)"
+    else c_msg="config: pull failed (token from $src)"; fi
+    rc=1
+  fi
+  echo "[update] $c_msg"
+fi
 agents=openclaw; [ -f "$OC_DIR/aohp/agents" ] && agents=$(grep -vE '^\s*(#|$)' "$OC_DIR/aohp/agents" | tr '\n' ' ')
-for a in $agents; do bash "$AGENTS_DIR/install/$a.sh"; done
+for a in $agents; do bash "$AGENTS_DIR/install/$a.sh" || { echo "[update] install/$a.sh failed"; rc=1; }; done
+summary="$a_msg${c_msg:+; $c_msg}"; [ $rc -eq 0 ] && summary="updated: $summary" || summary="FAILED: $summary"
+record "$rc" "$summary" "$(short "$AGENTS_DIR")" "$(short "$OC_DIR")"
+echo "[update] $summary"
+exit $rc
