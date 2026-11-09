@@ -6,7 +6,7 @@
 #                          pull never leaves the agents half-installed).
 #   aohp-update status     JSON for the Driver's Runtime card, no writes, ~2 s:
 #                            {agents:{dir,local,remote,behind,stale:[bin names not current in /usr/local/bin]},
-#                             config:{dir,repo,local,remote,behind,auth,error},
+#                             config:{dir,repo,local,remote,behind,auth,error,dirty[]},
 #                             github:{source: ssh|broker|env|gh|none},
 #                             last:{at,ok,summary}}            — last = what the previous run recorded
 #
@@ -43,6 +43,7 @@ gh_source() {
     GITC=(-c credential.helper= -c 'credential.helper=!f(){ printf "username=x-access-token\npassword=%s\n" "$GH_TOKEN"; }; f')
   fi
 }
+dirty_files() { git -C "$1" status --porcelain 2>/dev/null | awk '{print $2}' | tr '\n' ' '; }
 stale_bins() { local f; for f in $BINS; do [ -f "$AGENTS_DIR/bin/$f" ] && ! cmp -s "$AGENTS_DIR/bin/$f" "$BIN/$f" && printf '%s\n' "$f"; done; return 0; }
 record() { mkdir -p "$STATE"; python3 - "$1" "$2" "$3" "$4" > "$STATE/last.json" <<'PY'
 import json,sys,datetime
@@ -71,9 +72,9 @@ if [ "${1:-}" = status ]; then
     fi
   fi
   python3 - "$AGENTS_DIR" "$a_local" "$a_remote" "$a_behind" "$(stale_bins | tr '\n' ' ')" \
-            "$OC_DIR" "$c_repo" "$c_local" "$c_remote" "$c_behind" "$src" "$c_err" "$STATE/last.json" <<'PY'
+            "$OC_DIR" "$c_repo" "$c_local" "$c_remote" "$c_behind" "$src" "$c_err" "$STATE/last.json" "$(dirty_files "$OC_DIR")" <<'PY'
 import json,sys,os
-(adir,al,ar,ab,stale,cdir,crepo,cl,cr,cb,src,cerr,lastf)=sys.argv[1:14]
+(adir,al,ar,ab,stale,cdir,crepo,cl,cr,cb,src,cerr,lastf,dirty)=sys.argv[1:15]
 def n(s):
     try: return int(s)
     except ValueError: return None
@@ -83,7 +84,7 @@ if os.path.exists(lastf):
     except Exception: last=None
 out={"agents":{"dir":adir,"local":al,"remote":ar or None,"behind":n(ab) if ar else None,"stale":stale.split()},
      "config":{"dir":cdir,"repo":crepo or None,"local":cl or None,"remote":cr or None,"behind":n(cb) if cr else None,
-               "auth":src,"error":cerr or None} if crepo else {"dir":cdir,"repo":None,"auth":src,"error":None},
+               "auth":src,"error":cerr or None,"dirty":dirty.split()} if crepo else {"dir":cdir,"repo":None,"auth":src,"error":None},
      "github":{"source":src},"last":last}
 print(json.dumps(out))
 PY
@@ -107,7 +108,9 @@ if [ -d "$OC_DIR/.git" ]; then
   gh_source; src=$GH_SRC
   if git "${GITC[@]}" -C "$OC_DIR" pull -q --ff-only; then c_msg="config $(short "$OC_DIR")"
   else
-    if [ "$src" = none ]; then c_msg="config: pull failed, no GitHub token (grant GITHUB_TOKEN to this env in the Driver's Keys tab)"
+    dirty=$(dirty_files "$OC_DIR")
+    if [ -n "$dirty" ]; then c_msg="config: pull blocked by local changes (commit or stash: $dirty)"
+    elif [ "$src" = none ]; then c_msg="config: pull failed, no GitHub token (grant GITHUB_TOKEN to this env in the Driver's Keys tab)"
     elif [ "$src" = ssh ]; then c_msg="config: pull failed over ssh (deploy key in ~/.ssh?)"
     else c_msg="config: pull failed (token from $src)"; fi
     rc=1
