@@ -1,0 +1,14 @@
+[Unit]
+Description=AccountsService (Flatpak's parental-controls check: without it "flatpak install" and "flatpak run" fail)
+After=polkit.service
+Requires=polkit.service
+
+[Service]
+# libmalcontent asks org.freedesktop.Accounts on the system bus; with the daemon up and no malcontent
+# extension installed the answer is "parental controls disabled" and Flatpak carries on.
+ExecStart=/usr/libexec/accounts-daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=aohp.target

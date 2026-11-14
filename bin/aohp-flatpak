@@ -1,0 +1,29 @@
+#!/bin/sh
+# aohp-flatpak: run flatpak as the env's non-root Flatpak user with the session bits it expects.
+#   aohp-flatpak install flathub org.kde.kcalc
+#   aohp-flatpak run org.kde.kcalc            # window goes to $DISPLAY, default :0 (x11.service)
+# Set up by /opt/aohp-agents/install/flatpak.sh (user name in /etc/aohp/flatpak-user). Everything is
+# a per-user install (--user): no system helper, nothing written outside the user's home.
+set -eu
+U=$(cat /etc/aohp/flatpak-user 2>/dev/null || true)
+[ -n "$U" ] || { echo "aohp-flatpak: run /opt/aohp-agents/install/flatpak.sh first" >&2; exit 1; }
+UID_N=$(id -u "$U"); HOME_D=$(getent passwd "$U" | cut -d: -f6)
+if [ "$(id -u)" != 0 ] && [ "$(id -u)" != "$UID_N" ]; then echo "aohp-flatpak: run as root or as $U" >&2; exit 1; fi
+RT=/run/user/$UID_N
+if [ "$(id -u)" = 0 ]; then
+  # /run is a fresh tmpfs on every env start; /run/user must be searchable by the user
+  mkdir -p "$RT"; chmod 755 /run/user; chown "$UID_N:$(id -g "$U")" "$RT"; chmod 700 "$RT"
+fi
+DISP=${DISPLAY:-}
+[ -n "$DISP" ] || { [ -S /tmp/.X11-unix/X0 ] && DISP=:0; }
+SUB=${1:-}
+set -- flatpak --user "$@"
+case "$SUB" in run) set -- dbus-run-session -- "$@" ;; esac
+cd "$HOME_D"
+if [ "$(id -u)" = 0 ]; then
+  exec setpriv --reuid "$UID_N" --regid "$(id -g "$U")" --init-groups --inh-caps=-all --bounding-set=-all \
+    env -i HOME="$HOME_D" USER="$U" LOGNAME="$U" SHELL=/bin/bash LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin \
+    XDG_RUNTIME_DIR="$RT" ${DISP:+DISPLAY=$DISP} ${FLATPAK_BWRAP:+FLATPAK_BWRAP=$FLATPAK_BWRAP} "$@"
+fi
+export XDG_RUNTIME_DIR="$RT"; [ -n "$DISP" ] && export DISPLAY="$DISP"
+exec "$@"

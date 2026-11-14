@@ -22,6 +22,9 @@ aohp-containerd on the Android side; no PID namespace, so no real systemd) and a
 units at boot (`Restart=on-failure`, timers). `wg0`, `sshd`, `net-watchdog.timer`,
 `openclaw-watchdog.timer` are shipped disabled. See [docs/units.md](docs/units.md).
 
+Flatpak apps (real bubblewrap sandbox, Flathub): `install/flatpak.sh`, then `aohp-flatpak install|run ...`.
+See [docs/flatpak.md](docs/flatpak.md).
+
 ## Bootstrap flow
 
 1. `gh auth login --web` — an 8-character device code you enter at github.com/login/device

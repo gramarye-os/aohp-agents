@@ -1,0 +1,14 @@
+[Unit]
+Description=polkit authorization daemon (accounts-daemon needs it; Flatpak asks accounts-daemon on every install and launch)
+After=dbus-system.service
+Requires=dbus-system.service
+
+[Service]
+# A unit because D-Bus activation cannot work in the env: the system bus runs as root and
+# dbus-daemon-launch-helper refuses anything but the messagebus user. polkitd drops to user polkitd itself.
+ExecStart=/usr/lib/polkit-1/polkitd --no-debug
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=aohp.target
