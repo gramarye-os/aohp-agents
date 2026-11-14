@@ -27,7 +27,7 @@ and none of the denials shows up as an avc:
 | read-only bind of `/sdcard` (D-Bus proxy sandbox binds every top-level dir) | `Can't bind mount /sdcard on /sdcard: Unable to remount destination` | `fuse:filesystem remount` |
 | read-only bind of `/proc/self/ns/user` on `/run/.userns` | same, for `/newroot/run/.userns` | `unlabeled:filesystem remount` (nsfs has no label) |
 | `dri` device grant binds `/dev/udmabuf` when it exists | `Can't get type of source /dev/udmabuf` | `udmabuf_device:chr_file getattr` |
-| xdg-document-portal mounts FUSE on `/run/user/<uid>/doc` | `fuse: failed to open /dev/fuse` (apps still start) | `fuse_device` rw, `fuse:filesystem { mount unmount }`: not enough, see Limits |
+| xdg-document-portal mounts FUSE on `/run/user/<uid>/doc` | `fuse: failed to open /dev/fuse` (apps still start) | `fuse_device` rw, `fuse:filesystem { mount unmount }`, plus `/dev/fuse 0666` from ueventd (below) |
 
 On an older image `install/flatpak.sh` still works and says so; `aohp-flatpak run` stops at the
 first row.
@@ -48,12 +48,26 @@ Verified on dodge cred47 (2026-11-14) with no shim: KCalc from Flathub runs with
 - **A non-root user** with `/run/user/<uid>` (and `/run/user` searchable: a root `mkdir -p` leaves
   it 700 and dconf then fails).
 
+## File chooser (portals)
+
+A sandboxed app without direct folder access opens files through xdg-desktop-portal, which hands
+the chosen file to the sandbox on a FUSE mount, `/run/user/<uid>/doc`. Three things make that work:
+
+- **`/dev/fuse` openable by the user.** Stock Android has no ueventd rule for it, so it is `0600 root`;
+  libfuse opens the device itself and falls back to the setuid `fusermount3` only when `mount()` is
+  refused, not when the open is. `system/core` 0bd6c493d2 adds `/dev/fuse 0666 root root` (first image:
+  dodge cred48). The env's `/dev` is a bind of the host's, so this is the host node; SELinux still
+  limits opening it to a few system daemons and the container domain.
+- **A capability bounding set in the user session.** `fusermount3` is setuid root and needs
+  CAP_SYS_ADMIN; `aohp-flatpak` drops the inheritable set but keeps the bounding set.
+- **A backend.** `xdg-desktop-portal-gtk`; with no desktop configured xdg-desktop-portal falls back
+  to it and offers `FileChooser` version 4.
+
+Checked on dodge cred47 with a temporary `chmod 0666 /dev/fuse`: the document portal runs as uid 1000
+and mounts `/run/user/1000/doc`.
+
 ## Limits
 
-- **File-chooser portal:** does not work yet. `/dev/fuse` is `crw------- root` on Android; root in
-  the env can open it with the rule above, a user cannot, and libfuse only falls back to the setuid
-  `fusermount3` when `mount()` is refused, not when the open is. It needs a user-openable `/dev/fuse`
-  in the env's own `/dev` and a portal backend package. Apps with direct folder access are unaffected.
 - **GPU:** Flathub runtimes ship a Mesa without the KGSL backend, and the `dri` grant exposes
   `/dev/dri`, not `/dev/kgsl-3d0`. Apps render in software until a Turnip build is supplied as a
   runtime GL extension.

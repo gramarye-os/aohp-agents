@@ -21,7 +21,9 @@ log() { echo "[flatpak] $*"; }
 command -v apt-get >/dev/null || { echo "[flatpak] only Debian/apt containers are handled so far" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || { echo "[flatpak] run as root" >&2; exit 1; }
 
-PKGS="flatpak dbus-daemon dbus-bin dbus-system-bus-common polkitd accountsservice xdg-desktop-portal ca-certificates"
+# xdg-desktop-portal-gtk: the file chooser (and print/open-URI) backend; with no desktop configured
+# xdg-desktop-portal falls back to it, so no portals.conf is written.
+PKGS="flatpak dbus-daemon dbus-bin dbus-system-bus-common polkitd accountsservice xdg-desktop-portal xdg-desktop-portal-gtk ca-certificates"
 MISSING=""
 for p in $PKGS; do dpkg -s "$p" >/dev/null 2>&1 || MISSING="$MISSING $p"; done
 if [ -n "$MISSING" ]; then

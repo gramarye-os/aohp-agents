@@ -21,7 +21,9 @@ set -- flatpak --user "$@"
 case "$SUB" in run) set -- dbus-run-session -- "$@" ;; esac
 cd "$HOME_D"
 if [ "$(id -u)" = 0 ]; then
-  exec setpriv --reuid "$UID_N" --regid "$(id -g "$U")" --init-groups --inh-caps=-all --bounding-set=-all \
+  # The capability bounding set is kept on purpose: the document portal mounts through the setuid
+  # fusermount3, which gets no CAP_SYS_ADMIN from an emptied bounding set.
+  exec setpriv --reuid "$UID_N" --regid "$(id -g "$U")" --init-groups --inh-caps=-all \
     env -i HOME="$HOME_D" USER="$U" LOGNAME="$U" SHELL=/bin/bash LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin \
     XDG_RUNTIME_DIR="$RT" ${DISP:+DISPLAY=$DISP} ${FLATPAK_BWRAP:+FLATPAK_BWRAP=$FLATPAK_BWRAP} "$@"
 fi
