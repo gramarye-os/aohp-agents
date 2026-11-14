@@ -27,10 +27,13 @@ and none of the denials shows up as an avc:
 | read-only bind of `/sdcard` (D-Bus proxy sandbox binds every top-level dir) | `Can't bind mount /sdcard on /sdcard: Unable to remount destination` | `fuse:filesystem remount` |
 | read-only bind of `/proc/self/ns/user` on `/run/.userns` | same, for `/newroot/run/.userns` | `unlabeled:filesystem remount` (nsfs has no label) |
 | `dri` device grant binds `/dev/udmabuf` when it exists | `Can't get type of source /dev/udmabuf` | `udmabuf_device:chr_file getattr` |
-| xdg-document-portal mounts FUSE on `/run/user/<uid>/doc` | `fuse: failed to open /dev/fuse` (apps still start) | `fuse_device` rw, `fuse:filesystem { mount unmount }` |
+| xdg-document-portal mounts FUSE on `/run/user/<uid>/doc` | `fuse: failed to open /dev/fuse` (apps still start) | `fuse_device` rw, `fuse:filesystem { mount unmount }`: not enough, see Limits |
 
 On an older image `install/flatpak.sh` still works and says so; `aohp-flatpak run` stops at the
 first row.
+
+Verified on dodge cred47 (2026-11-14) with no shim: KCalc from Flathub runs with the `dri` grant,
+`unshare -U` inside the sandbox is refused, and no new avc appears for the container domain.
 
 ## What the env needs (what install/flatpak.sh does)
 
@@ -47,6 +50,10 @@ first row.
 
 ## Limits
 
+- **File-chooser portal:** does not work yet. `/dev/fuse` is `crw------- root` on Android; root in
+  the env can open it with the rule above, a user cannot, and libfuse only falls back to the setuid
+  `fusermount3` when `mount()` is refused, not when the open is. It needs a user-openable `/dev/fuse`
+  in the env's own `/dev` and a portal backend package. Apps with direct folder access are unaffected.
 - **GPU:** Flathub runtimes ship a Mesa without the KGSL backend, and the `dri` grant exposes
   `/dev/dri`, not `/dev/kgsl-3d0`. Apps render in software until a Turnip build is supplied as a
   runtime GL extension.
