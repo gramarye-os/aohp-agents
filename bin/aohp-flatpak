@@ -7,25 +7,51 @@
 set -eu
 U=$(cat /etc/aohp/flatpak-user 2>/dev/null || true)
 [ -n "$U" ] || { echo "aohp-flatpak: run /opt/aohp-agents/install/flatpak.sh first" >&2; exit 1; }
-UID_N=$(id -u "$U"); HOME_D=$(getent passwd "$U" | cut -d: -f6)
+UID_N=$(id -u "$U"); GID_N=$(id -g "$U"); HOME_D=$(getent passwd "$U" | cut -d: -f6)
 if [ "$(id -u)" != 0 ] && [ "$(id -u)" != "$UID_N" ]; then echo "aohp-flatpak: run as root or as $U" >&2; exit 1; fi
 RT=/run/user/$UID_N
+BUS=$RT/bus
 if [ "$(id -u)" = 0 ]; then
   # /run is a fresh tmpfs on every env start; /run/user must be searchable by the user
-  mkdir -p "$RT"; chmod 755 /run/user; chown "$UID_N:$(id -g "$U")" "$RT"; chmod 700 "$RT"
+  mkdir -p "$RT"; chmod 755 /run/user; chown "$UID_N:$GID_N" "$RT"; chmod 700 "$RT"
 fi
 DISP=${DISPLAY:-}
 [ -n "$DISP" ] || { [ -S /tmp/.X11-unix/X0 ] && DISP=:0; }
-SUB=${1:-}
-set -- flatpak --user "$@"
-case "$SUB" in run) set -- dbus-run-session -- "$@" ;; esac
+
+# Run a command as the Flatpak user with the session environment.
+# The capability bounding set is kept on purpose: the document portal mounts through the setuid
+# fusermount3, which gets no CAP_SYS_ADMIN from an emptied bounding set.
+as_user() {
+  if [ "$(id -u)" = 0 ]; then
+    setpriv --reuid "$UID_N" --regid "$GID_N" --init-groups --inh-caps=-all \
+      env -i HOME="$HOME_D" USER="$U" LOGNAME="$U" SHELL=/bin/bash LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin \
+      XDG_RUNTIME_DIR="$RT" DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS" ${DISP:+DISPLAY=$DISP} \
+      ${FLATPAK_BWRAP:+FLATPAK_BWRAP=$FLATPAK_BWRAP} "$@"
+  else
+    env XDG_RUNTIME_DIR="$RT" DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS" ${DISP:+DISPLAY=$DISP} "$@"
+  fi
+}
+
+# One session bus per Flatpak user, shared by every app. A bus per app (dbus-run-session) gives each
+# app its own xdg-document-portal, and only the first can mount $XDG_RUNTIME_DIR/doc.
+bus_alive() {
+  as_user dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply \
+    /org/freedesktop/DBus org.freedesktop.DBus.GetId >/dev/null 2>&1
+}
 cd "$HOME_D"
-if [ "$(id -u)" = 0 ]; then
-  # The capability bounding set is kept on purpose: the document portal mounts through the setuid
-  # fusermount3, which gets no CAP_SYS_ADMIN from an emptied bounding set.
-  exec setpriv --reuid "$UID_N" --regid "$(id -g "$U")" --init-groups --inh-caps=-all \
-    env -i HOME="$HOME_D" USER="$U" LOGNAME="$U" SHELL=/bin/bash LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin \
-    XDG_RUNTIME_DIR="$RT" ${DISP:+DISPLAY=$DISP} ${FLATPAK_BWRAP:+FLATPAK_BWRAP=$FLATPAK_BWRAP} "$@"
+if ! bus_alive; then
+  # no bus means no portal: clear a socket or portal mount left by a dead one
+  as_user rm -f "$BUS"
+  as_user fusermount3 -u -z "$RT/doc" 2>/dev/null || true
+  as_user dbus-daemon --session --address="unix:path=$BUS" --nopidfile --fork >/dev/null 2>&1
+  i=0; while ! bus_alive; do i=$((i+1)); [ "$i" -le 30 ] || { echo "aohp-flatpak: session bus did not start" >&2; exit 1; }; sleep 0.1; done
 fi
-export XDG_RUNTIME_DIR="$RT"; [ -n "$DISP" ] && export DISPLAY="$DISP"
-exec "$@"
+# services the bus starts later (the portal backend) need the display
+[ -z "$DISP" ] || as_user dbus-update-activation-environment DISPLAY >/dev/null 2>&1 || true
+if [ "$(id -u)" = 0 ]; then
+  exec setpriv --reuid "$UID_N" --regid "$GID_N" --init-groups --inh-caps=-all \
+    env -i HOME="$HOME_D" USER="$U" LOGNAME="$U" SHELL=/bin/bash LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin \
+    XDG_RUNTIME_DIR="$RT" DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS" ${DISP:+DISPLAY=$DISP} \
+    ${FLATPAK_BWRAP:+FLATPAK_BWRAP=$FLATPAK_BWRAP} flatpak --user "$@"
+fi
+exec env XDG_RUNTIME_DIR="$RT" DBUS_SESSION_BUS_ADDRESS="unix:path=$BUS" ${DISP:+DISPLAY=$DISP} flatpak --user "$@"

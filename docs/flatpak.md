@@ -11,8 +11,8 @@ be added: SELinux rules in the ROM and a few services in the env.
     aohp-flatpak run org.kde.kcalc               # window on $DISPLAY, default :0 (x11.service)
 
 `aohp-flatpak` runs `flatpak --user` as the env's non-root Flatpak user (name in
-`/etc/aohp/flatpak-user`) with `HOME`, `XDG_RUNTIME_DIR=/run/user/<uid>` and, for `run`, a session
-bus. Apps and runtimes live in that user's `~/.local/share/flatpak` (KCalc + the KDE 6.11 runtime:
+`/etc/aohp/flatpak-user`) with `HOME`, `XDG_RUNTIME_DIR=/run/user/<uid>` and a session bus shared by
+all of that user's apps. Apps and runtimes live in that user's `~/.local/share/flatpak` (KCalc + the KDE 6.11 runtime:
 2.6 GB).
 
 ## What the ROM needs
@@ -51,7 +51,7 @@ Verified on dodge cred47 (2026-11-14) with no shim: KCalc from Flathub runs with
 ## File chooser (portals)
 
 A sandboxed app without direct folder access opens files through xdg-desktop-portal, which hands
-the chosen file to the sandbox on a FUSE mount, `/run/user/<uid>/doc`. Three things make that work:
+the chosen file to the sandbox on a FUSE mount, `/run/user/<uid>/doc`. Five things make that work:
 
 - **`/dev/fuse` openable by the user.** Stock Android has no ueventd rule for it, so it is `0600 root`;
   libfuse opens the device itself and falls back to the setuid `fusermount3` only when `mount()` is
@@ -63,8 +63,18 @@ the chosen file to the sandbox on a FUSE mount, `/run/user/<uid>/doc`. Three thi
 - **A backend.** `xdg-desktop-portal-gtk`; with no desktop configured xdg-desktop-portal falls back
   to it and offers `FileChooser` version 4.
 
-Checked on dodge cred47 with a temporary `chmod 0666 /dev/fuse`: the document portal runs as uid 1000
-and mounts `/run/user/1000/doc`.
+- **The caller check.** Before answering, xdg-desktop-portal opens `/proc/<pid>/root` of the caller
+  (the app's xdg-dbus-proxy, inside a user namespace) to read `.flatpak-info`. That needs
+  `cap_userns sys_ptrace` for the container domain: sepolicy round 15, `system/sepolicy` f169a7ea8
+  (first image: dodge cred49). Without it every portal call fails with "Portal operation not allowed:
+  Unable to open /proc/<pid>/root".
+- **One session bus per user.** `aohp-flatpak` starts a bus at `$XDG_RUNTIME_DIR/bus` on first use and
+  every app shares it. A bus per app gives each app its own xdg-document-portal, and only the first
+  can mount `$XDG_RUNTIME_DIR/doc`.
+
+Verified on dodge cred49 (2026-11-14, enforcing): `/dev/fuse` is `crw-rw-rw-`, the document portal
+mounts `/run/user/1000/doc` (`/run/flatpak/doc` inside the sandbox), and `FileChooser.OpenFile` called
+from a second sandbox while KCalc is running opens the GTK dialog; one bus, one document portal.
 
 ## Limits
 
