@@ -52,6 +52,25 @@ The script builds the CLI image once (native platform), then `podman build --pla
 --numeric-owner --owner=0 --group=0`, excluding dev/proc/sys/run). An arm64 build runs under qemu; the OpenClaw
 `npm install` dominates (several minutes). Expect ~3 min (amd64) / ~10 min (arm64) per template on a 32-core host.
 
+## Tessera and the GPU variant
+
+Every Debian build carries the agent of [Tessera](https://github.com/gramarye-os/tessera-linux), the
+Android launcher for Linux GUI apps: `common/tessera-layer.sh` takes the agent files from the
+commit `TESSERA_REF` and stages them (`/opt/tessera`, the enabled unit `tessera-agent.service`).
+The pairing token is not in the template. The unit makes it on the phone the first time it starts,
+and `tessera-pair` then gives the code the app asks for.
+
+```sh
+VARIANT=gpu template/build-template.sh debian arm64     # -> dist/debian-gpu-arm64.tar.gz
+```
+
+The GPU variant adds Debian's GL and X client libraries and unpacks a Mesa built for Adreno GPUs
+through Android's kgsl device (`MESA_URL`, pinned by `MESA_SHA256`) over Debian's own Mesa, whose
+packages are then held so an upgrade does not put Debian's files back. It is about 250 MB larger
+unpacked (1635 MB in the first build), which is over the limit above, so it is meant for phones
+with 12 GB of RAM or more. `vendor/aohp/fetch-prebuilts.sh debian-gpu` installs it in place of
+the lean Debian template.
+
 ## Test
 
 - **Host-side smoke** (no device): `podman run --rm --platform linux/arm64 localhost/aohp-template-debian:arm64 bash -lc

@@ -8,6 +8,11 @@ ARG NODE_VERSION=v24.21.0
 ARG OPENCLAW_VERSION=2026.9.6
 ARG AOHP_AGENTS_REPO=https://github.com/gramarye-os/aohp-agents.git
 ARG AOHP_AGENTS_REF=main
+# Tessera's agent (every build) and, with GPU=1, the graphics stack and the kgsl Mesa: common/tessera-layer.sh.
+ARG TESSERA_REF
+ARG GPU=0
+ARG MESA_URL=
+ARG MESA_SHA256=
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
 
 # Same package set as the former /aosp/templates/build-debian-template.sh (debootstrap --variant=minbase --include=...),
@@ -27,5 +32,6 @@ COPY --from=aohp-cli /src/skills/ /opt/aohp-skills/
 COPY --from=aohp-cli /src/AOHP_COMMIT /opt/aohp-skills/.aohp-commit
 RUN chmod 755 /usr/local/bin/aohp \
  && OPENCLAW_VERSION=$OPENCLAW_VERSION AOHP_AGENTS_REPO=$AOHP_AGENTS_REPO AOHP_AGENTS_REF=$AOHP_AGENTS_REF bash /tmp/provision/agent-layer.sh \
+ && TESSERA_REF=$TESSERA_REF GPU=$GPU MESA_URL=$MESA_URL MESA_SHA256=$MESA_SHA256 sh /tmp/provision/tessera-layer.sh \
  && sh /tmp/provision/cleanup.sh
 CMD ["/bin/bash"]
