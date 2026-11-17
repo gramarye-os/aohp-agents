@@ -65,7 +65,8 @@ VARIANT=gpu template/build-template.sh debian arm64     # -> dist/debian-gpu-arm
 ```
 
 The GPU variant adds Debian's GL and X client libraries and unpacks a Mesa built for Adreno GPUs
-through Android's kgsl device (`MESA_URL`, pinned by `MESA_SHA256`) over Debian's own Mesa, whose
+through Android's kgsl device (`MESA_URL`, pinned by `MESA_SHA256`; since `templates-20261117b` the build
+that lfdevs/mesa-for-android-container merged, 6939216a65) over Debian's own Mesa, whose
 packages are then held so an upgrade does not put Debian's files back. It is about 250 MB larger
 unpacked (1635 MB in the first build), which is over the limit above, so it is meant for phones
 with 12 GB of RAM or more. `vendor/aohp/fetch-prebuilts.sh debian-gpu` installs it in place of

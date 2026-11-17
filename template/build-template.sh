@@ -29,8 +29,8 @@ ARCH_AMD64_IMAGE=${ARCH_AMD64_IMAGE:-docker.io/library/archlinux:base-devel}
 FEDORA_IMAGE=${FEDORA_IMAGE:-registry.fedoraproject.org/fedora:44}
 # Tessera: the agent files come from this commit of gramarye-os/tessera-linux; the GPU variant also unpacks this Mesa.
 TESSERA_REF=${TESSERA_REF:-0f749fb83968093bb86a96f45700e38c2993a7d5}
-MESA_URL=${MESA_URL:-https://github.com/gramarye-os/tessera-linux/releases/download/v0.7.0-gramarye.1/mesa-kgsl_27.0.0-devel-g12ab4ca92a_debian_trixie_arm64.tar.gz}
-MESA_SHA256=${MESA_SHA256:-35f09d0f262a8d7820cc5861b1f2feb628731b9b3bc130d50a91b64daa9701ee}
+MESA_URL=${MESA_URL:-https://github.com/gramarye-os/tessera-linux/releases/download/v0.7.0-gramarye.1/mesa-kgsl_27.0.0-devel-g6939216a65_debian_trixie_arm64.tar.gz}
+MESA_SHA256=${MESA_SHA256:-8a294f395e48ccca6c12f0fe4f12c9dfaed74fbb7cb4bab99d2473fe90be8bc3}
 VARIANT=${VARIANT:-}
 case $DISTRO in debian|fedora|arch) ;; *) echo "unknown distro $DISTRO" >&2; exit 2;; esac
 case $ARCH in arm64|amd64) ;; *) echo "unknown arch $ARCH" >&2; exit 2;; esac
