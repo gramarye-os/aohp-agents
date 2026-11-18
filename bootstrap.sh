@@ -71,7 +71,11 @@ for a in $agents; do log "install/$a.sh"; bash "$AGENTS_DIR/install/$a.sh"; done
 # env-start). Fallback for images whose Driver/containerd predate units: the old svc-start path.
 case " $agents " in *" openclaw "*)
   log "openclaw-gateway unit"
+  # A gateway that is already up (the templates start one) was started before the secrets and the
+  # config were here, and "enable --now" leaves it running as it is: restart it.
+  was_up=0; systemctl is-active -q openclaw-gateway 2>/dev/null && was_up=1
   if systemctl enable --now openclaw-gateway 2>/dev/null; then
+    if [ "$was_up" = 1 ]; then log "restarting the running gateway"; systemctl restart openclaw-gateway >/dev/null 2>&1 || true; fi
     systemctl status openclaw-gateway --no-log 2>/dev/null | head -3 || true
   elif command -v aohp >/dev/null && aohp sandbox svc-start -n "$(cat /etc/aohp/env-name 2>/dev/null || echo oc)" -i openclaw-gateway -C 'openclaw gateway' >/dev/null 2>&1; then
     log "started via svc-start (image without units; enable Autostart in the Driver app)"
