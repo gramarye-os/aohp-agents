@@ -48,6 +48,15 @@ rm -f /tmp/mesa.tar.gz
 ldconfig
 # An apt upgrade of these would put Debian's files back over ours.
 apt-mark hold libgl1-mesa-dri libglx-mesa0 libegl-mesa0 libgbm1 mesa-libgallium >/dev/null
+# Chromium, when the user installs it (Debian's wrapper reads /etc/chromium.d/*), draws through
+# Vulkan. Through its OpenGL path on Tessera's X server, Chromium 150+ leaves every fullscreen
+# (a video's, a page's) by itself 1.5 s after entering it; through ANGLE's Vulkan backend on
+# Turnip it does not, and compositing stays on the GPU.
+mkdir -p /etc/chromium.d
+cat > /etc/chromium.d/gramarye-vulkan <<'EOF'
+# Gramarye env: draw through Vulkan (Turnip) instead of OpenGL, or fullscreen drops out after 1.5 s.
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --use-angle=vulkan"
+EOF
 test -s /usr/share/tessera/mesa
 L=/usr/lib/aarch64-linux-gnu
 for so in $L/libvulkan_freedreno.so $L/libGLX_mesa.so.0 $L/libEGL_mesa.so.0 $L/libgbm.so.1 $L/dri/libdril_dri.so; do
