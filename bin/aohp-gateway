@@ -4,7 +4,8 @@
 #   aohp-gateway status            JSON: tls, fingerprint, bind, urls per interface, pending/paired counts
 #   aohp-gateway fingerprint       SHA-256 of the serving cert (what a browser should be told to expect)
 #   aohp-gateway devices           JSON {pending:[…], paired:[…]} (openclaw devices list --json)
-#   aohp-gateway approve [id]      approve a pending browser/app pairing (default: most recent)
+#   aohp-gateway approve [id]      approve a pending browser/app pairing (default: most recent), or a node request
+#                                  (an app that wants to act as a node; status lists those with kind "node")
 #   aohp-gateway reject <id> | remove <id> | rename <id> <label>
 #   aohp-gateway pair-url [iface]  https URL + fingerprint for a browser (default: wg0, else first LAN)
 #   aohp-gateway setup-code        single-use OpenClaw mobile-app setup code (openclaw qr)
@@ -49,6 +50,10 @@ print(json.dumps({'cn': cn, 'names': names, 'ips': ips, 'notAfter': na, 'covers'
 PY
 }
 
+# True when the id is a waiting node request (see status). One extra CLI call, only on approve/reject.
+is_node_request() { oc devices list --json 2>/dev/null | python3 -c 'import json,sys
+d=json.load(sys.stdin); sys.exit(0 if any((p.get("pendingNodeSurface") or {}).get("requestId")==sys.argv[1] for p in d.get("paired",[])) else 1)' "$1" 2>/dev/null; }
+
 case "${1:-}" in
   status)
     fp=$(fingerprint); scheme=$(tls_on && echo https || echo http)
@@ -74,15 +79,25 @@ def strip(p):
     q = {k: v for k, v in p.items() if k not in ('publicKey', 'tokens')}
     q['host'] = host_of(q.get('remoteIp'))
     return q
+pending = [strip(p) for p in d.get('pending', [])]
+# A paired app that wants to act as a node (or whose node permissions changed) waits on "openclaw nodes approve".
+# devices list carries that request on the paired entry; list it here so the Driver can offer Allow for it.
+for p in d.get('paired', []):
+    n = p.get('pendingNodeSurface') or {}
+    if n.get('requestId'):
+        pending.append({'requestId': n['requestId'], 'deviceId': p.get('deviceId'), 'kind': 'node', 'reapproval': bool(p.get('nodeSurface')),
+                        'label': p.get('label') or n.get('displayName') or p.get('displayName') or '', 'displayName': n.get('displayName') or p.get('displayName') or '',
+                        'platform': n.get('platform') or p.get('platform') or '?', 'clientId': n.get('clientId') or p.get('clientId') or '?',
+                        'remoteIp': n.get('remoteIp') or p.get('remoteIp') or '', 'host': host_of(n.get('remoteIp') or p.get('remoteIp'))})
 print(json.dumps({'tls': scheme == 'https', 'fingerprint': fp or None, 'bind': bind or 'loopback', 'auth': auth or 'none', 'port': int(port),
-                  'urls': urls, 'pending': [strip(p) for p in d.get('pending', [])], 'paired': [strip(p) for p in d.get('paired', [])],
+                  'urls': urls, 'pending': pending, 'paired': [strip(p) for p in d.get('paired', [])],
                   'cert': json.loads(cert or 'null')}))
 PY
     ;;
   fingerprint) fp=$(fingerprint); [ -n "$fp" ] && echo "$fp" || { echo 'TLS is off (no certificate)' >&2; exit 3; } ;;
   devices) oc devices list --json ;;
-  approve) shift; if [ -n "${1:-}" ]; then oc devices approve "$1"; else oc devices approve --latest; fi ;;
-  reject)  [ -n "${2:-}" ] || die 'reject <deviceId>'; oc devices reject "$2" ;;
+  approve) shift; if [ -z "${1:-}" ]; then oc devices approve --latest; elif is_node_request "$1"; then oc nodes approve "$1"; else oc devices approve "$1"; fi ;;
+  reject)  [ -n "${2:-}" ] || die 'reject <deviceId>'; if is_node_request "$2"; then oc nodes reject "$2"; else oc devices reject "$2"; fi ;;
   remove)  [ -n "${2:-}" ] || die 'remove <deviceId>'; oc devices remove "$2" ;;
   rename)  [ -n "${3:-}" ] || die 'rename <deviceId> <label>'; oc devices rename "$2" "$3" ;;
   pair-url)
