@@ -24,7 +24,8 @@ export GIT_TERMINAL_PROMPT=0
 # Starting openclaw takes seconds on a phone and the Driver calls this script often, so openclaw is only
 # asked for a setting the config file mentions; otherwise the default holds.
 CFG=${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}
-PORT=; if grep -qsw port "$CFG"; then PORT=$(openclaw config get gateway.port 2>/dev/null | tr -dc 0-9); fi; PORT=${PORT:-18789}
+# The port is only looked up by the verbs that print it (not by "fingerprint", which the Driver calls every 20 s).
+need_port(){ PORT=; if grep -qsw port "$CFG"; then PORT=$(openclaw config get gateway.port 2>/dev/null | tr -dc 0-9); fi; PORT=${PORT:-18789}; }
 TLSDIR=$HOME/.openclaw/gateway/tls
 die(){ echo "aohp-gateway: $*" >&2; exit 1; }
 oc(){ openclaw "$@" 2>&1 | grep -vE '^Config \('; return ${PIPESTATUS[0]}; }
@@ -62,6 +63,7 @@ d=json.load(sys.stdin); sys.exit(0 if any((p.get("pendingNodeSurface") or {}).ge
 
 case "${1:-}" in
   status)
+    need_port
     fp=$(fingerprint); scheme=$(tls_on && echo https || echo http)
     dev=$(oc devices list --json 2>/dev/null); [ -n "$dev" ] || dev='{}'
     python3 - "$scheme" "$PORT" "$fp" "$(openclaw config get gateway.bind 2>/dev/null | tr -d '"')" "$(openclaw config get gateway.auth.mode 2>/dev/null | tr -d '"')" "$dev" "$(addrs)" "$(cert_json)" <<'PY'
@@ -107,11 +109,13 @@ PY
   remove)  [ -n "${2:-}" ] || die 'remove <deviceId>'; oc devices remove "$2" ;;
   rename)  [ -n "${3:-}" ] || die 'rename <deviceId> <label>'; oc devices rename "$2" "$3" ;;
   pair-url)
+    need_port
     want=${2:-wg0}; ip=$(addrs | awk -v w="$want" '$1==w{print $2; exit}'); [ -n "$ip" ] || ip=$(addrs | awk '{print $2; exit}')
     [ -n "$ip" ] || die 'no non-loopback address'
     printf '%s://%s:%s\n' "$(tls_on && echo https || echo http)" "$ip" "$PORT"; fp=$(fingerprint); [ -n "$fp" ] && echo "cert sha256 $fp" ;;
   setup-code) oc qr --setup-code-only ;;
   pair-code)
+    need_port
     want=${2:-wlan0}; ip=$(addrs | awk -v w="$want" '$1==w{print $2; exit}'); [ -n "$ip" ] || ip=$(addrs | awk '{print $2; exit}')
     [ -n "$ip" ] || die 'no non-loopback address'
     sc=$(oc qr --setup-code-only 2>/dev/null | tail -1); [ -n "$sc" ] || die 'could not mint a setup code (gateway up?)'
