@@ -17,9 +17,6 @@
       "workspace": "/root/.openclaw/workspace",
       "model": {
         "primary": "anthropic/claude-sonnet-5"
-      },
-      "heartbeat": {
-        "every": "0m"
       }
     }
   },
@@ -28,11 +25,6 @@
       "extraDirs": [
         "/opt/aohp-skills"
       ]
-    },
-    "workshop": {
-      "autonomous": {
-        "mode": "off"
-      }
     }
   },
   "plugins": {
