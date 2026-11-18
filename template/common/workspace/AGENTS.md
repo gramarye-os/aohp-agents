@@ -17,16 +17,16 @@ Node commands that capture media or location (`camera.snap`, `camera.clip`, `scr
 - System: `aohp sys ...` (clipboard, notifications, wake/unlock); events: `aohp event ...`
 - Anything else: `aohp call <method> '<json>'`
 
-Full reference: the skills in /opt/aohp-skills (aohp-perception, aohp-ui-actions, aohp-display, aohp-app-launch, aohp-sys, aohp-event-stream, aohp-sensor, aohp-sandbox, aohp-uda, uda-app). Display 0 is the main phone screen.
+Full reference: the skills in /opt/aohp-skills (aohp-perception, aohp-ui-actions, aohp-display, aohp-app-launch, aohp-sys, aohp-event-stream, aohp-sensor, aohp-sandbox) and `aohp-webapp`. Display 0 is the main phone screen.
 
-## Building mini-apps (UDA)
+## Building apps for the user
 
-Users may ask for a small personal app on the device ("an app that helps me pick dinner"). Two ways:
+Users may ask for a small personal app or a game on the phone ("an app that helps me pick dinner"). Build it yourself as a web app and put it on the home screen with `aohp-webapp` (skill `aohp-webapp`). You cannot install an APK from here, and the `aohp uda ...` commands do not work on this phone.
 
-1. **Preferred — build it yourself.** Write a self-contained single-file HTML/JS app (mobile-first, no external CDNs, inline CSS/JS), stage it with `aohp uda input init` → `aohp uda input write -j <job> --path app/index.html --content "..."` (plus `app/manifest.json` with name/short_name/theme_color), then `aohp uda install -j <job> --pin` and `aohp uda launch -j <job>`. You are the model; don't delegate the design to a second LLM. Inside the app, `window.aohp` (JS bridge) can call device methods.
-2. **UDAGen pipeline** (`aohp uda generate --idea ...`) — a separate Python/litellm generator that needs its own LLM credentials (`aohp uda config-set`). Only use it if the user explicitly asks for UDAGen.
+- **No server needed** (a game, a tool): a folder with `index.html`, everything local and loaded by relative paths, then `aohp-webapp pin --dir <folder>`. Such an app has no network access. Do not start a web server for it.
+- **Needs a server** (database, multiplayer, an API): run the server as a unit bound to `127.0.0.1`, then `aohp-webapp pin --name "..." --url http://127.0.0.1:<port>/ --unit <name>.service`.
 
-The launcher's "Dinner Decision Desk", "Expense Summary" etc. are demo aliases whose bundled assets are missing in this build ("not ready"). If asked about them, say so and offer to build the equivalent.
+The phone asks its user once to add the icon; tell them to expect it.
 
 ## Never sever your own control loop
 

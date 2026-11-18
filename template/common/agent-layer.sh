@@ -44,6 +44,9 @@ chmod 700 /root/.openclaw /tmp/openclaw
 install -m 600 $P/openclaw-default.json /root/.openclaw/openclaw.json
 cp -r $P/workspace/. /root/.openclaw/workspace/
 cp -r /opt/aohp-skills/. /root/.openclaw/workspace/skills/     # same skills the Alpine template ships; identical to the aohp repo's skills/
+# The UDA commands these two describe are not in the Gramarye Driver; apps go on the home screen with aohp-webapp.
+rm -rf /root/.openclaw/workspace/skills/aohp-uda /root/.openclaw/workspace/skills/uda-app
+test -f /root/.openclaw/workspace/skills/aohp-webapp/SKILL.md
 
 log "versions"
 NODE_OPTIONS="--jitless" openclaw --version

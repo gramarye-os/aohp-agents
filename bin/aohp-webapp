@@ -1,0 +1,102 @@
+#!/bin/bash
+# aohp-webapp: put a web app made in this env on the phone's home screen.
+#
+# Nothing is installed on the Android side. The Driver keeps a small record and a home-screen
+# shortcut; the shortcut opens the app in a full-screen window of its own (bridge methods webapp.*).
+#
+#   aohp-webapp pin --dir <folder> [--name N] [--entry index.html]
+#       An app made only of files (HTML, JS, images). No server is needed and none is used: the
+#       Driver hands the files over. The app has NO network access at all.
+#   aohp-webapp pin --url http://127.0.0.1:<port>/ --name N [--unit <name>.service]
+#       An app with its own server in this env (a backend, a database, multiplayer). Bind the server
+#       to 127.0.0.1. With --unit the Driver starts that unit before it opens the app.
+#   options for both: [--id slug] [--color '#rrggbb'] [--icon /path/in/env.png] [--immersive] [--no-pin] [--env name]
+#   aohp-webapp list
+#   aohp-webapp open <id>
+#   aohp-webapp remove <id>
+#
+# With --dir, name and colour default to the folder's manifest.json (name or short_name, theme_color).
+# The phone's user is asked once to add the icon to the home screen.
+set -euo pipefail
+exec python3 - "$@" <<'PY'
+import argparse, json, os, subprocess, sys
+
+def call(method, params):
+    try:
+        r = subprocess.run(["aohp", "call", method, json.dumps(params)], capture_output=True, text=True, timeout=60)
+    except FileNotFoundError:
+        sys.exit("aohp-webapp: the aohp command is not installed in this env")
+    except subprocess.TimeoutExpired:
+        sys.exit("aohp-webapp: the Driver did not answer within 60 s")
+    out = (r.stdout or "").strip()
+    try:
+        d = json.loads(out[out.index("{"):]) if "{" in out else {}
+    except ValueError:
+        d = {}
+    if d.get("code") == "unknown_method":
+        sys.exit("aohp-webapp: this phone's Driver has no web apps yet (it needs AOHP Driver v0.9.0-cred.23 or later)")
+    if d.get("error") or (r.returncode != 0 and not d.get("ok")):
+        sys.exit("aohp-webapp: " + (d.get("message") or (r.stderr or out or "the Driver refused").strip()))
+    return d
+
+ap = argparse.ArgumentParser(prog="aohp-webapp", description="Put a web app made in this env on the phone's home screen.")
+sub = ap.add_subparsers(dest="cmd", required=True)
+p = sub.add_parser("pin", help="register an app and ask for a home-screen icon")
+g = p.add_mutually_exclusive_group(required=True)
+g.add_argument("--dir", help="folder with the app's files (no network, no server)")
+g.add_argument("--url", help="http://127.0.0.1:<port>/ of the app's own server in this env")
+p.add_argument("--name"); p.add_argument("--id"); p.add_argument("--entry"); p.add_argument("--unit")
+p.add_argument("--color"); p.add_argument("--icon"); p.add_argument("--env")
+p.add_argument("--immersive", action="store_true", help="hide the status and navigation bars")
+p.add_argument("--no-pin", action="store_true", help="register only, no home-screen icon")
+sub.add_parser("list", help="the registered apps")
+for n in ("open", "remove"):
+    sub.add_parser(n).add_argument("id")
+a = ap.parse_args()
+
+if a.cmd == "list":
+    apps = call("webapp.list", {}).get("apps", [])
+    if not apps:
+        print("no web apps")
+    for x in apps:
+        where = x["dir"] if x["mode"] == "dir" else x["url"] + (" (" + x["unit"] + ")" if x.get("unit") else "")
+        print("%-20s %-4s env:%s  %s  %s%s" % (x["id"], x["mode"], x["env"], where, x["name"], "" if x.get("onHomeScreen") else "  [not on the home screen]"))
+elif a.cmd in ("open", "remove"):
+    print(call("webapp." + a.cmd, {"id": a.id}).get("message", "ok"))
+else:
+    q = {"pin": not a.no_pin, "immersive": a.immersive}
+    name, color = a.name, a.color
+    if a.dir:
+        d = os.path.realpath(a.dir)
+        entry = (a.entry or "index.html").lstrip("/")
+        if not os.path.isfile(os.path.join(d, entry)):
+            sys.exit("aohp-webapp: no file %s in %s" % (entry, d))
+        try:
+            m = json.load(open(os.path.join(d, "manifest.json")))
+        except (OSError, ValueError):
+            m = {}
+        if isinstance(m, dict):
+            name = name or m.get("name") or m.get("short_name")
+            c = m.get("theme_color")
+            if not color and isinstance(c, str) and len(c) == 7 and c.startswith("#"):
+                color = c
+        q.update(dir=d, entry=entry)
+        if a.unit:
+            sys.exit("aohp-webapp: --unit goes with --url (a --dir app has no server)")
+    else:
+        if a.entry:
+            sys.exit("aohp-webapp: --entry goes with --dir")
+        q["url"] = a.url
+        if a.unit:
+            q["unit"] = a.unit
+    if not name:
+        sys.exit("aohp-webapp: --name is needed (no name in manifest.json)")
+    q["name"] = name[:40]
+    for k, v in (("id", a.id), ("color", color), ("env", a.env)):
+        if v:
+            q[k] = v
+    if a.icon:
+        q["icon"] = os.path.realpath(a.icon)
+    r = call("webapp.pin", q)
+    print("%s: %s" % (r.get("id", "?"), r.get("message", "ok")))
+PY
