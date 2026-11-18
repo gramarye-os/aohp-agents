@@ -34,7 +34,12 @@ command -v apt-get >/dev/null || { echo "GPU=1 is for the Debian template only" 
 apt-get update
 apt-get install -y --no-install-recommends \
   libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libegl-mesa0 libgles2 libgbm1 libvulkan1 \
-  xauth x11-utils x11-xserver-utils x11-xkb-utils xterm dbus-x11 fonts-dejavu-core mesa-utils vulkan-tools
+  xauth x11-utils x11-xserver-utils x11-xkb-utils xterm dbus-x11 fonts-dejavu-core mesa-utils vulkan-tools \
+  matchbox-window-manager python3-xlib xsettingsd at-spi2-core python3-pyatspi pulseaudio
+# The last line is what Tessera starts with every X app when it finds it: matchbox keeps the one app
+# full screen (without it a window opens at its own size in a corner), python3-xlib is its window
+# list, xsettingsd its theme, at-spi its text input, pulseaudio its sound (without it apps are
+# silent). Tessera does not install these in a gramarye env.
 apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
 curl -fL --retry 3 -o /tmp/mesa.tar.gz "$MESA_URL"
 echo "$MESA_SHA256  /tmp/mesa.tar.gz" | sha256sum -c -
