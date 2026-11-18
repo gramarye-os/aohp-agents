@@ -24,7 +24,8 @@ log "GitHub auth"
 if [ -n "$tokfile" ]; then gh auth login --with-token < "$tokfile"
 elif ! gh auth status >/dev/null 2>&1; then
   echo "  A one-time code will be shown; enter it at https://github.com/login/device from any browser."
-  if [ -r /dev/tty ]; then gh auth login --hostname github.com --git-protocol https --web < /dev/tty
+  # Opened, not just tested: run from the Driver app there is a /dev/tty node but no terminal behind it.
+  if ( : < /dev/tty ) 2>/dev/null; then gh auth login --hostname github.com --git-protocol https --web < /dev/tty
   else gh auth login --hostname github.com --git-protocol https --web; fi
 fi
 gh auth setup-git >/dev/null
