@@ -21,13 +21,19 @@
 # from the env, see aohp-secrets). Exit: 0 ok; 1 usage; 2 gateway not reachable; 3 cli error.
 set -u
 export GIT_TERMINAL_PROMPT=0
-PORT=$(openclaw config get gateway.port 2>/dev/null | tr -dc 0-9); PORT=${PORT:-18789}
+# Starting openclaw takes seconds on a phone and the Driver calls this script often, so openclaw is only
+# asked for a setting the config file mentions; otherwise the default holds.
+CFG=${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}
+PORT=; if grep -qsw port "$CFG"; then PORT=$(openclaw config get gateway.port 2>/dev/null | tr -dc 0-9); fi; PORT=${PORT:-18789}
 TLSDIR=$HOME/.openclaw/gateway/tls
 die(){ echo "aohp-gateway: $*" >&2; exit 1; }
 oc(){ openclaw "$@" 2>&1 | grep -vE '^Config \('; return ${PIPESTATUS[0]}; }
 
 fingerprint(){
-  local c=$(openclaw config get gateway.tls.certPath 2>/dev/null | tr -d '"'); [ -f "$c" ] || c=$TLSDIR/gateway-cert.pem
+  # The Driver asks this every 20 s.
+  local c=
+  if grep -qs certPath "$CFG"; then c=$(openclaw config get gateway.tls.certPath 2>/dev/null | tr -d '"'); fi
+  [ -f "$c" ] || c=$TLSDIR/gateway-cert.pem
   [ -f "$c" ] && openssl x509 -in "$c" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2
 }
 tls_on(){ [ "$(openclaw config get gateway.tls.enabled 2>/dev/null)" = true ]; }
