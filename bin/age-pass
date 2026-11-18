@@ -24,7 +24,9 @@ while pty_open or pipe_open:
         if not data: pty_open = False
         else:
             err += data
-            if b"assphrase" in data and sent < 2:
+            # Answer age's two prompts only. "incorrect passphrase" must not match: by then the
+            # terminal echoes again, and the passphrase would land in the error text we print.
+            if (b"Enter passphrase" in data or b"Confirm passphrase" in data) and sent < 2:
                 os.write(fd, (pp + "\n").encode()); sent += 1
     if rfd in r:
         data = os.read(rfd, 65536)
