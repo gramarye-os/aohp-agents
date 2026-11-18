@@ -32,7 +32,9 @@ gh auth setup-git >/dev/null
 
 log "agents repo -> $AGENTS_DIR"
 if [ -d "$AGENTS_DIR/.git" ]; then git -C "$AGENTS_DIR" pull -q --ff-only; else git clone -q "$AGENTS_REPO" "$AGENTS_DIR"; fi
-install -m 755 "$AGENTS_DIR/bin/aohp-update" "$AGENTS_DIR/bin/aohp-secrets" "$AGENTS_DIR/bin/age-pass" "$AGENTS_DIR/bin/cred-get" /usr/local/bin/
+# The file list is aohp-update's, so the two cannot drift apart (aohp-enable and cred-set were missing here).
+bins=$(sed -n 's/^BINS="\(.*\)"$/\1/p' "$AGENTS_DIR/bin/aohp-update"); [ -n "$bins" ] || { echo "no BINS list in $AGENTS_DIR/bin/aohp-update"; exit 1; }
+for f in $bins; do install -m 755 "$AGENTS_DIR/bin/$f" /usr/local/bin/; done
 install -m 755 "$AGENTS_DIR/bootstrap.sh" /usr/local/bin/aohp-bootstrap
 bash "$AGENTS_DIR/install/units.sh" >/dev/null 2>&1 || true   # unit files + systemctl shim (docs/units.md); harmless on old images
 

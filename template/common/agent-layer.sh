@@ -19,7 +19,9 @@ log() { echo "[agent-layer] $*"; }
 log "aohp-agents ($AOHP_AGENTS_REF) -> /opt/aohp-agents"
 rm -rf /opt/aohp-agents
 git clone -q --branch "$AOHP_AGENTS_REF" "$AOHP_AGENTS_REPO" /opt/aohp-agents
-install -m 755 /opt/aohp-agents/bin/aohp-update /opt/aohp-agents/bin/aohp-secrets /opt/aohp-agents/bin/age-pass /opt/aohp-agents/bin/cred-get /usr/local/bin/
+# The file list is aohp-update's, so the two cannot drift apart (aohp-enable and cred-set were missing here).
+bins=$(sed -n 's/^BINS="\(.*\)"$/\1/p' /opt/aohp-agents/bin/aohp-update); test -n "$bins"
+for f in $bins; do install -m 755 "/opt/aohp-agents/bin/$f" /usr/local/bin/; done
 install -m 755 /opt/aohp-agents/bootstrap.sh /usr/local/bin/aohp-bootstrap
 # Units (systemd-subset service files supervised by aohp-containerd, docs/units.md) + the systemctl/journalctl
 # shims (/usr/local/bin precedes /usr/bin, so they shadow Debian's real systemctl, which cannot work here anyway).
