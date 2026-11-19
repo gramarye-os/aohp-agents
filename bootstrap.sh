@@ -63,6 +63,9 @@ git -C "$OC_DIR" checkout -q -f -B "$b" "origin/$b"
 git -C "$OC_DIR" branch -q --set-upstream-to="origin/$b" "$b"
 [ -f "$OC_DIR/openclaw.json" ] && chmod 600 "$OC_DIR/openclaw.json"
 
+log "OS skills"
+aohp-skills-sync || log "skills sync failed (aohp-skills-sync)"
+
 log "secrets"
 aohp-secrets setup ${method:+--method "$method"} ${ageid:+--age-identity "$ageid"} ${ppf:+--passphrase-file "$ppf"}
 

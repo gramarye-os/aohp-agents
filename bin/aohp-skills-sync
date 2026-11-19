@@ -1,0 +1,61 @@
+#!/bin/bash
+# aohp-skills-sync: put the skills the OS ships into the agent's workspace.
+#
+# The OS owns its skills. In an env they come from two places:
+#   /opt/aohp-skills                                    the phone skills built into the template
+#   /opt/aohp-agents/template/common/workspace/skills   skills kept in aohp-agents (aohp-update pulls it)
+# Each is copied to <openclaw home>/workspace/skills/<name>, replacing an older copy there. On a name
+# clash the aohp-agents copy wins, since it is the one that gets updates.
+#
+# Left alone: every skill the OS does not ship (the user's and the agent's own), and a skill the
+# config repo tracks under the same name. The second case is reported, so a stale copy in a config
+# repo is never a silent override of the OS skill.
+#
+# aohp-update and aohp-bootstrap run this after the config repo is checked out. That also covers a
+# config repo that used to carry copies of the OS skills and has dropped them: the pull deletes the
+# old copies, and this puts the OS ones back.
+#
+#   aohp-skills-sync           install / refresh
+#   aohp-skills-sync --check   say what would change, change nothing
+set -uo pipefail
+AGENTS_DIR=${AOHP_AGENTS_DIR:-/opt/aohp-agents}; OC_DIR=${OPENCLAW_HOME:-$HOME/.openclaw}
+OS_SKILLS=${AOHP_SKILLS_DIR:-/opt/aohp-skills}
+DEST=$OC_DIR/workspace/skills
+# These two describe the "aohp uda" commands, which the Gramarye Driver does not have.
+SKIP=" aohp-uda uda-app "
+check=0
+case "${1:-}" in --check) check=1;; "") ;; *) echo "usage: aohp-skills-sync [--check]" >&2; exit 2;; esac
+
+declare -A from
+for src in "$OS_SKILLS" "$AGENTS_DIR/template/common/workspace/skills"; do
+  [ -d "$src" ] || continue
+  for d in "$src"/*/; do
+    [ -f "${d}SKILL.md" ] || continue
+    n=$(basename "$d")
+    case "$SKIP" in *" $n "*) continue;; esac
+    from[$n]=${d%/}
+  done
+done
+[ ${#from[@]} -gt 0 ] || { echo "[skills] no OS skills found in $OS_SKILLS or $AGENTS_DIR"; exit 0; }
+
+tracked() { [ -d "$OC_DIR/.git" ] && [ -n "$(git -C "$OC_DIR" ls-files -- "workspace/skills/$1" 2>/dev/null | head -1)" ]; }
+
+rc=0; added=""; updated=""; own=""; same=0
+for n in $(printf '%s\n' "${!from[@]}" | sort); do
+  if tracked "$n"; then own="$own $n"; continue; fi
+  if [ -d "$DEST/$n" ]; then
+    if diff -rq "${from[$n]}" "$DEST/$n" >/dev/null 2>&1; then same=$((same+1)); continue; fi
+    updated="$updated $n"
+  else
+    added="$added $n"
+  fi
+  [ $check = 1 ] && continue
+  mkdir -p "$DEST" && rm -rf "$DEST/$n" && cp -r "${from[$n]}" "$DEST/$n" || { echo "[skills] could not install $n"; rc=1; }
+done
+
+verb=""; [ $check = 1 ] && verb="would be "
+[ -n "$added" ] && echo "[skills] ${verb}installed:$added"
+[ -n "$updated" ] && echo "[skills] ${verb}updated:$updated"
+[ -n "$own" ] && echo "[skills] the config repo ships its own copy, OS copy not used:$own"
+[ -z "$added$updated" ] && echo "[skills] OS skills up to date ($same)"
+exit $rc

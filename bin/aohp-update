@@ -19,7 +19,7 @@
 set -uo pipefail
 AGENTS_DIR=${AOHP_AGENTS_DIR:-/opt/aohp-agents}; OC_DIR=${OPENCLAW_HOME:-$HOME/.openclaw}
 BIN=/usr/local/bin; STATE=/var/lib/aohp-update
-BINS="aohp-update aohp-secrets age-pass cred-get cred-set cred-list cred-providers aohp-enable aohp-gateway aohp-webapp"
+BINS="aohp-update aohp-secrets age-pass cred-get cred-set cred-list cred-providers aohp-enable aohp-gateway aohp-webapp aohp-skills-sync"
 export GIT_TERMINAL_PROMPT=0
 
 short() { git -C "$1" rev-parse --short HEAD 2>/dev/null; }
@@ -118,6 +118,9 @@ if [ -d "$OC_DIR/.git" ]; then
   fi
   echo "[update] $c_msg"
 fi
+# The OS owns its skills: (re)install them in the workspace, after the config pull so that copies a
+# config repo has stopped carrying are put back from the OS.
+"$BIN/aohp-skills-sync" || { echo "[update] skills sync failed"; rc=1; }
 agents=openclaw; [ -f "$OC_DIR/aohp/agents" ] && agents=$(grep -vE '^\s*(#|$)' "$OC_DIR/aohp/agents" | tr '\n' ' ')
 for a in $agents; do bash "$AGENTS_DIR/install/$a.sh" || { echo "[update] install/$a.sh failed"; rc=1; }; done
 summary="$a_msg${c_msg:+; $c_msg}"; [ $rc -eq 0 ] && summary="updated: $summary" || summary="FAILED: $summary"
