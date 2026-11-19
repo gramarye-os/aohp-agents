@@ -75,6 +75,10 @@ aohp-webapp open <id>       # open it now
 aohp-webapp remove <id>     # the icon stays, disabled, until the user drags it away
 ```
 
+An app belongs to the env it was pinned from. When that env is destroyed or reset, the phone removes
+its apps as well (their icons stay, disabled). After rebuilding an env, build the app again and pin
+it again.
+
 ## If it fails
 
 - "this phone's Driver has no web apps yet": the AOHP Driver app is older than v0.9.0-cred.23. Say
