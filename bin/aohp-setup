@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""aohp-setup - apply a setup profile inside an AOHP agent container.
+
+  aohp-setup apply <file> [--only a,b] [--keep]   apply a profile: JSON, or the payload text a setup QR code carries.
+                                                  The file holds secrets and is removed afterwards unless --keep.
+  aohp-setup status [--json]                      what is set up here; prints no secret
+  aohp-setup encode <profile.json>                profile -> payload text (for a QR code)
+  aohp-setup decode <payload-file>                payload text -> JSON
+
+A profile is one JSON object; every section is optional:
+
+  {"v": 1, "name": "oneplus13",
+   "wireguard": {"address": "10.100.0.6/24", "private_key": "...", "peer_public_key": "...",
+                 "endpoint": "vpn.example.org:51820", "allowed_ips": ["10.100.0.0/24"], "keepalive": 25},
+   "ssh":       {"authorized_keys": ["ssh-ed25519 AAAA... me@host"], "port": 2222,
+                 "listen": ["127.0.0.1", "10.100.0.6"]},
+   "bootstrap": {"repo": "user/repo", "branch": "main", "age_passphrase": "...", "gh_token": "..."}}
+
+The sections run in that order: tunnel and ssh first, so the phone is reachable even when the bootstrap
+needs another try. wireguard writes /etc/wireguard/wg0.conf and enables wg0; ssh writes the sshd drop-in
+and authorized_keys and enables sshd (it listens on loopback and the tunnel address only, never on Wi-Fi);
+bootstrap runs aohp-bootstrap.
+
+Exit code: 0 ok; 2 bad profile; 5 wrong age passphrase (from aohp-bootstrap); 10 wireguard failed;
+11 ssh failed; 12 bootstrap failed for another reason.
+"""
+import base64, ipaddress, json, os, re, subprocess, sys, tempfile, time, zlib
+
+PREFIX = "AOHP1:"
+ROOT = os.environ.get("AOHP_SETUP_ROOT", "")            # tests: write below this directory
+DRY = os.environ.get("AOHP_SETUP_DRYRUN", "") == "1"     # tests: write files, run no service command
+WG_CONF = ROOT + "/etc/wireguard/wg0.conf"
+SSHD_CONF = ROOT + "/etc/ssh/sshd_config.d/10-aohp.conf"
+AUTH_KEYS = ROOT + "/root/.ssh/authorized_keys"
+SSHD_TEMPLATE = os.environ.get("AOHP_AGENTS_DIR", "/opt/aohp-agents") + "/net/10-aohp.conf.template"
+OC_DIR = os.environ.get("OPENCLAW_HOME", os.path.expanduser("~/.openclaw"))
+SSHD_DEFAULTS = ["PidFile /run/sshd.pid", "PasswordAuthentication no", "KbdInteractiveAuthentication no",
+                 "PubkeyAuthentication yes", "PermitRootLogin prohibit-password", "UsePAM no", "X11Forwarding no",
+                 "AllowTcpForwarding yes", "ClientAliveInterval 60", "ClientAliveCountMax 3"]
+KEY_RE = re.compile(r"[A-Za-z0-9+/]{43}=")
+SSH_KEY_RE = re.compile(r"(ssh-(ed25519|rsa|dss)|ecdsa-sha2-[a-z0-9-]+|sk-[a-z0-9@.-]+) [A-Za-z0-9+/=]+( .*)?")
+
+
+class Bad(Exception):
+    pass
+
+
+def log(section, msg):
+    print("[setup] %s: %s" % (section, msg), flush=True)
+
+
+def run(cmd, **kw):
+    """Run a command, return (rc, combined output). Never raises for a missing program."""
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kw)
+        return p.returncode, p.stdout.strip()
+    except FileNotFoundError:
+        return 127, "%s: not found" % cmd[0]
+
+
+def encode(profile):
+    raw = json.dumps(profile, separators=(",", ":"), sort_keys=True).encode()
+    return PREFIX + base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode().rstrip("=")
+
+
+def decode(text):
+    text = text.strip()
+    try:
+        if text.startswith(PREFIX):
+            b = text[len(PREFIX):]
+            text = zlib.decompress(base64.urlsafe_b64decode(b + "=" * (-len(b) % 4))).decode()
+        profile = json.loads(text)
+    except Exception:
+        raise Bad("not a setup profile (neither JSON nor an %s payload)" % PREFIX)
+    if not isinstance(profile, dict):
+        raise Bad("a profile is a JSON object")
+    return profile
+
+
+def need(sec, d, key, typ=str):
+    v = d.get(key)
+    if not isinstance(v, typ) or (typ is str and not v) or (typ is list and not v):
+        raise Bad("%s.%s is missing" % (sec, key))
+    return v
+
+
+def check(profile):
+    """Validate a profile; returns it with defaults filled in. Raises Bad with a message that names no value."""
+    if profile.get("v") != 1:
+        raise Bad('unsupported profile version (expected "v": 1)')
+    unknown = sorted(set(profile) - {"v", "name", "wireguard", "ssh", "bootstrap"})
+    if unknown:
+        raise Bad("unknown section(s): " + ", ".join(unknown))
+    name = profile.get("name", "")
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._ -]{0,40}", name):
+        raise Bad("name: letters, digits, dot, dash, space; 40 at most")
+    wg = profile.get("wireguard")
+    if wg is not None:
+        if not isinstance(wg, dict):
+            raise Bad("wireguard must be an object")
+        try:
+            ipaddress.ip_interface(need("wireguard", wg, "address"))
+            nets = [str(ipaddress.ip_network(n, strict=False)) for n in need("wireguard", wg, "allowed_ips", list)]
+        except ValueError:
+            raise Bad("wireguard: address or allowed_ips is not an IP network")
+        wg["allowed_ips"] = nets
+        for k in ("private_key", "peer_public_key") + (("preshared_key",) if "preshared_key" in wg else ()):
+            if not KEY_RE.fullmatch(need("wireguard", wg, k)):
+                raise Bad("wireguard.%s is not a WireGuard key" % k)
+        if not re.fullmatch(r"(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]+):\d{1,5}", need("wireguard", wg, "endpoint")):
+            raise Bad("wireguard.endpoint must be host:port")
+        for k, dflt in (("keepalive", 25), ("table", 51820)):
+            wg.setdefault(k, dflt)
+            if not isinstance(wg[k], int) or not 0 <= wg[k] <= 2 ** 31:
+                raise Bad("wireguard.%s must be a number" % k)
+    ssh = profile.get("ssh")
+    if ssh is not None:
+        if not isinstance(ssh, dict):
+            raise Bad("ssh must be an object")
+        keys = need("ssh", ssh, "authorized_keys", list)
+        if not all(isinstance(k, str) and SSH_KEY_RE.fullmatch(k.strip()) for k in keys):
+            raise Bad("ssh.authorized_keys: each entry is one public key line")
+        ssh["authorized_keys"] = [k.strip() for k in keys]
+        ssh.setdefault("port", 2222)
+        if not isinstance(ssh["port"], int) or not 1 <= ssh["port"] <= 65535:
+            raise Bad("ssh.port must be a port number")
+        if "listen" in ssh:
+            try:
+                ssh["listen"] = [str(ipaddress.ip_address(a)) for a in need("ssh", ssh, "listen", list)]
+            except ValueError:
+                raise Bad("ssh.listen: each entry is an IP address")
+    bs = profile.get("bootstrap")
+    if bs is not None:
+        if not isinstance(bs, dict):
+            raise Bad("bootstrap must be an object")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", need("bootstrap", bs, "repo")):
+            raise Bad("bootstrap.repo must be user/repo")
+        if "branch" in bs and not re.fullmatch(r"[A-Za-z0-9_.][A-Za-z0-9_./-]{0,99}", str(bs["branch"])):
+            raise Bad("bootstrap.branch is not a branch name")
+        for k in ("age_passphrase", "gh_token"):
+            if k in bs and (not isinstance(bs[k], str) or not bs[k] or "\n" in bs[k]):
+                raise Bad("bootstrap.%s must be one line of text" % k)
+        if bs.get("secrets", "age") not in ("age", "keystore", "paste"):
+            raise Bad("bootstrap.secrets must be age, keystore or paste")
+    return profile
+
+
+def write_private(path, text, mode=0o600):
+    """Write a file atomically with the given mode. Returns True when the content changed."""
+    try:
+        with open(path) as f:
+            same = f.read() == text
+    except OSError:
+        same = False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if same:
+        os.chmod(path, mode)
+        return False
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".aohp-setup.")
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    return True
+
+
+def unit_up(section, unit, changed):
+    """Enable a unit and make sure it runs with the current config. Returns True when it is active."""
+    if DRY:
+        log(section, "dry run: would enable and %s %s" % ("restart" if changed else "start", unit))
+        return True
+    run(["systemctl", "daemon-reload"])
+    active = run(["systemctl", "is-active", "-q", unit])[0] == 0
+    rc, out = run(["systemctl", "enable", unit])
+    if rc != 0:
+        log(section, "could not enable %s: %s" % (unit, out[-200:]))
+    rc, out = run(["systemctl", "restart" if active and changed else "start", unit])
+    if rc != 0:
+        log(section, "%s did not start: %s" % (unit, out[-300:]))
+    for _ in range(10):
+        if run(["systemctl", "is-active", "-q", unit])[0] == 0:
+            return True
+        time.sleep(1)
+    return False
+
+
+def wg_conf(wg, name):
+    lines = ["# Written by aohp-setup%s. Split tunnel, no default route." % (" (%s)" % name if name else ""),
+             "[Interface]", "Address = " + wg["address"], "PrivateKey = " + wg["private_key"],
+             "# Android uses policy routing (the main table is never consulted): a table of our own,",
+             "# and one rule per subnet that should go through the tunnel.",
+             "Table = %d" % wg["table"]]
+    rules = []
+    for i, net in enumerate(wg["allowed_ips"]):
+        ip = "ip -6" if ":" in net else "ip"
+        rules.append("%s rule %%s to %s lookup %d pref %d" % (ip, net, wg["table"], 9000 + i))
+    lines += ["PostUp = " + r % "add" for r in rules] + ["PostDown = " + r % "del" for r in rules]
+    lines += ["", "[Peer]", "PublicKey = " + wg["peer_public_key"]]
+    if "preshared_key" in wg:
+        lines.append("PresharedKey = " + wg["preshared_key"])
+    lines += ["Endpoint = " + wg["endpoint"], "AllowedIPs = " + ", ".join(wg["allowed_ips"])]
+    if wg["keepalive"]:
+        lines.append("PersistentKeepalive = %d" % wg["keepalive"])
+    return "\n".join(lines) + "\n"
+
+
+def handshake_age():
+    rc, out = run(["wg", "show", "wg0", "latest-handshakes"])
+    stamps = [int(l.split()[-1]) for l in out.splitlines() if l.split() and l.split()[-1].isdigit()] if rc == 0 else []
+    newest = max(stamps, default=0)
+    return int(time.time()) - newest if newest else None
+
+
+def do_wireguard(wg, name):
+    os.makedirs(os.path.dirname(WG_CONF), mode=0o700, exist_ok=True)
+    changed = write_private(WG_CONF, wg_conf(wg, name))
+    log("wireguard", "%s %s (address %s, endpoint %s)" % (WG_CONF, "written" if changed else "unchanged", wg["address"], wg["endpoint"]))
+    if not unit_up("wireguard", "wg0", changed):
+        log("wireguard", "wg0 is not up")
+        return 10
+    if DRY:
+        return 0
+    age = None
+    for _ in range(15):
+        age = handshake_age()
+        if age is not None:
+            break
+        time.sleep(1)
+    if age is None:
+        log("wireguard", "wg0 is up, but no handshake yet: does the other end know this phone's public key?")
+    else:
+        log("wireguard", "wg0 is up, last handshake %d s ago" % age)
+    return 0
+
+
+def tunnel_address():
+    try:
+        with open(WG_CONF) as f:
+            m = re.search(r"^Address\s*=\s*([0-9A-Fa-f.:]+)", f.read(), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def sshd_conf(ssh, listen):
+    try:
+        with open(SSHD_TEMPLATE) as f:
+            body = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+        body = [l for l in body if not l.startswith(("Port ", "ListenAddress "))]
+    except OSError:
+        body = SSHD_DEFAULTS
+    head = ["# Written by aohp-setup. Listens on loopback and the tunnel address only: the container shares the",
+            "# phone's network, so a wildcard bind would put sshd on Wi-Fi and mobile data.",
+            "Port %d" % ssh["port"]] + ["ListenAddress " + a for a in listen]
+    return "\n".join(head + body) + "\n"
+
+
+def do_ssh(ssh, wg):
+    listen = ssh.get("listen")
+    if not listen:
+        tun = wg["address"].split("/")[0] if wg else tunnel_address()
+        listen = ["127.0.0.1"] + ([tun] if tun else [])
+    changed = write_private(SSHD_CONF, sshd_conf(ssh, listen), 0o644)
+    log("ssh", "%s %s (port %d, listening on %s)" % (SSHD_CONF, "written" if changed else "unchanged", ssh["port"], ", ".join(listen)))
+    os.makedirs(os.path.dirname(AUTH_KEYS), mode=0o700, exist_ok=True)
+    os.chmod(os.path.dirname(AUTH_KEYS), 0o700)
+    have = []
+    if not ssh.get("replace_keys"):
+        try:
+            with open(AUTH_KEYS) as f:
+                have = [l.strip() for l in f if l.strip()]
+        except OSError:
+            pass
+    blobs = {l.split()[1] for l in have if not l.startswith("#") and len(l.split()) > 1}
+    new = [k for k in ssh["authorized_keys"] if k.split()[1] not in blobs]
+    write_private(AUTH_KEYS, "\n".join(have + new) + "\n")
+    log("ssh", "authorized_keys: %d key(s), %d added" % (len([l for l in have + new if not l.startswith("#")]), len(new)))
+    if not DRY:
+        os.makedirs("/run/sshd", exist_ok=True)
+        run(["ssh-keygen", "-A"])
+        rc, out = run(["sshd", "-t"])
+        if rc != 0:
+            log("ssh", "sshd rejects its configuration: %s" % out[-300:])
+            return 11
+    if not unit_up("ssh", "sshd", changed):
+        rc, out = run(["tail", "-n", "5", "/var/log/sshd.log"])
+        log("ssh", "sshd is not running%s" % (": " + out[-400:] if out else ""))
+        return 11
+    log("ssh", "sshd is running")
+    return 0
+
+
+def secret_file(text):
+    fd, path = tempfile.mkstemp(prefix=".aohp-setup.", dir="/tmp")
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text + "\n")
+    return path
+
+
+def do_bootstrap(bs):
+    cmd = ["aohp-bootstrap", bs["repo"]]
+    if bs.get("branch"):
+        cmd += ["--branch", str(bs["branch"])]
+    tmp = []
+    try:
+        if "age_passphrase" in bs:
+            tmp.append(secret_file(bs["age_passphrase"]))
+            cmd += ["--secrets", bs.get("secrets", "age"), "--passphrase-file", tmp[-1]]
+        elif "secrets" in bs:
+            cmd += ["--secrets", bs["secrets"]]
+        if "gh_token" in bs:
+            tmp.append(secret_file(bs["gh_token"]))
+            cmd += ["--token-file", tmp[-1]]
+        log("bootstrap", "aohp-bootstrap %s%s" % (bs["repo"], " --branch %s" % bs["branch"] if bs.get("branch") else ""))
+        if DRY:
+            log("bootstrap", "dry run: " + " ".join(c if not c.startswith("/tmp/.aohp-setup.") else "<file>" for c in cmd))
+            return 0
+        try:
+            rc = subprocess.call(cmd)
+        except FileNotFoundError:
+            log("bootstrap", "aohp-bootstrap is not installed here (run aohp-update)")
+            return 12
+    finally:
+        for p in tmp:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+    if rc == 5:
+        log("bootstrap", "wrong age passphrase")
+        return 5
+    if rc != 0:
+        log("bootstrap", "aohp-bootstrap exited %d" % rc)
+        return 12
+    return 0
+
+
+def apply(path, only, keep):
+    try:
+        with open(path) as f:
+            profile = check(decode(f.read()))
+    finally:
+        if not keep and os.path.isfile(path):
+            try:
+                size = os.path.getsize(path)
+                with open(path, "r+b") as f:
+                    f.write(b"\0" * size)
+                os.unlink(path)
+            except OSError:
+                pass
+    sections = [s for s in ("wireguard", "ssh", "bootstrap") if s in profile and (not only or s in only)]
+    if not sections:
+        raise Bad("the profile has nothing to set up")
+    log("profile", "%s: %s" % (profile.get("name") or "unnamed", ", ".join(sections)))
+    for s in sections:
+        if s == "wireguard":
+            rc = do_wireguard(profile["wireguard"], profile.get("name", ""))
+        elif s == "ssh":
+            rc = do_ssh(profile["ssh"], profile.get("wireguard"))
+        else:
+            rc = do_bootstrap(profile["bootstrap"])
+        if rc != 0:
+            log("profile", "stopped at %s (exit %d)" % (s, rc))
+            return rc
+    log("profile", "done")
+    return 0
+
+
+def status(as_json):
+    st = {"wireguard": {"configured": os.path.isfile(WG_CONF)}, "ssh": {"configured": os.path.isfile(SSHD_CONF)},
+          "bootstrap": {"configured": os.path.isdir(OC_DIR + "/.git")}}
+    if st["wireguard"]["configured"]:
+        with open(WG_CONF) as f:
+            conf = f.read()
+        for key, pat in (("address", r"^Address\s*=\s*(\S+)"), ("endpoint", r"^Endpoint\s*=\s*(\S+)"),
+                         ("peer", r"^PublicKey\s*=\s*(\S+)"), ("allowed_ips", r"^AllowedIPs\s*=\s*(.+)$")):
+            m = re.search(pat, conf, re.M)
+            st["wireguard"][key] = m.group(1).strip() if m else None
+        rc, pub = run(["wg", "show", "wg0", "public-key"])
+        st["wireguard"]["up"] = rc == 0
+        st["wireguard"]["public_key"] = pub if rc == 0 else None
+        st["wireguard"]["handshake_age_s"] = handshake_age() if rc == 0 else None
+    if st["ssh"]["configured"]:
+        with open(SSHD_CONF) as f:
+            conf = f.read()
+        st["ssh"]["port"] = int((re.search(r"^Port\s+(\d+)", conf, re.M) or [0, 0])[1])
+        st["ssh"]["listen"] = re.findall(r"^ListenAddress\s+(\S+)", conf, re.M)
+        st["ssh"]["running"] = run(["systemctl", "is-active", "-q", "sshd"])[0] == 0
+    try:
+        with open(AUTH_KEYS) as f:
+            st["ssh"]["authorized_keys"] = [" ".join(l.split()[2:]) or l.split()[0] for l in f if l.strip() and not l.startswith("#")]
+    except OSError:
+        st["ssh"]["authorized_keys"] = []
+    if st["bootstrap"]["configured"]:
+        git = lambda *a: run(["git", "-C", OC_DIR] + list(a))[1]
+        st["bootstrap"]["repo"] = re.sub(r"^(https://github.com/|git@github.com:)|\.git$", "", git("remote", "get-url", "origin"))
+        st["bootstrap"]["branch"] = git("rev-parse", "--abbrev-ref", "HEAD")
+        st["bootstrap"]["head"] = git("rev-parse", "--short", "HEAD")
+        try:
+            with open(OC_DIR + "/.secrets-method") as f:
+                st["bootstrap"]["secrets"] = f.read().strip()
+        except OSError:
+            st["bootstrap"]["secrets"] = None
+    if as_json:
+        print(json.dumps(st))
+        return
+    for sec in ("wireguard", "ssh", "bootstrap"):
+        d = st[sec]
+        if not d["configured"] and not (sec == "ssh" and d["authorized_keys"]):
+            print("%-10s not set up" % sec)
+            continue
+        print("%-10s %s" % (sec, "; ".join("%s=%s" % (k, ", ".join(v) if isinstance(v, list) else v) for k, v in d.items() if k != "configured")))
+
+
+def main(argv):
+    if len(argv) >= 2 and argv[0] == "apply":
+        opts = argv[2:]
+        only = None
+        if "--only" in opts:
+            only = set(opts[opts.index("--only") + 1].split(","))
+        return apply(argv[1], only, "--keep" in opts)
+    if argv and argv[0] == "status":
+        status("--json" in argv)
+        return 0
+    if len(argv) == 2 and argv[0] in ("encode", "decode"):
+        with open(argv[1]) as f:
+            profile = check(decode(f.read()))
+        print(encode(profile) if argv[0] == "encode" else json.dumps(profile, indent=1))
+        return 0
+    sys.stderr.write(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Bad as e:
+        print("[setup] %s" % e, file=sys.stderr)
+        sys.exit(2)
+    except (OSError, IndexError) as e:
+        print("[setup] %s" % e, file=sys.stderr)
+        sys.exit(2)

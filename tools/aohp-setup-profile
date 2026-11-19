@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""aohp-setup-profile - build a setup profile on a workstation and get it to a phone.
+
+  aohp-setup-profile new -o FILE --name NAME
+        [--wg-address 10.100.0.6/24 --wg-peer-key KEY --wg-endpoint HOST:PORT --wg-allowed NET[,NET...]
+         [--wg-private-key-file F]]                      without the file a new key pair is made here
+        [--ssh-key FILE.pub ...] [--ssh-port 2222] [--ssh-listen IP[,IP...]]
+        [--repo USER/REPO [--branch B] [--passphrase-file F] [--gh-token-file F]]
+  aohp-setup-profile pubkey FILE       the phone's WireGuard public key (register it at the other end)
+  aohp-setup-profile show FILE         the profile with the secrets blanked
+  aohp-setup-profile payload FILE      the text a setup QR code carries
+  aohp-setup-profile qr FILE           draw that QR code on this terminal (needs qrencode)
+  aohp-setup-profile adb FILE --serial S [--env oc] [--port 27680] [--push-tool]
+        apply it over adb through the Driver's bridge. Needs the aohp CLI: "aohp" on PATH, or AOHP_CLI
+        (for example AOHP_CLI="node /path/to/aohp.js"). --push-tool copies this checkout's bin/aohp-setup
+        into the env first, to try a version that is not released yet.
+
+The profile file and the QR code hold secrets in clear (tunnel key, passphrase, token): the file is written
+with mode 600, and the QR code belongs on your own screen only. Inside the env the profile is applied by
+aohp-setup (bin/aohp-setup in this repo), which documents the format.
+"""
+import argparse, base64, importlib.machinery, importlib.util, json, os, shlex, shutil, subprocess, sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+TOOL = os.path.join(HERE, "..", "bin", "aohp-setup")
+SECRET_NAME = "AOHP_SETUP_PROFILE"
+ENV_FILE = "/tmp/.aohp-setup-profile"
+ENV_LOG = "/tmp/aohp-setup.log"
+
+
+def setup_module():
+    loader = importlib.machinery.SourceFileLoader("aohp_setup", TOOL)
+    spec = importlib.util.spec_from_loader("aohp_setup", loader)
+    mod = importlib.util.module_from_spec(spec)
+    sys.dont_write_bytecode = True
+    loader.exec_module(mod)
+    return mod
+
+
+def die(msg):
+    sys.exit("aohp-setup-profile: " + msg)
+
+
+def read1(path):
+    with open(path) as f:
+        return f.read().strip()
+
+
+def x25519_keypair():
+    der = subprocess.run(["openssl", "genpkey", "-algorithm", "X25519", "-outform", "DER"], check=True, stdout=subprocess.PIPE).stdout
+    return base64.b64encode(der[-32:]).decode(), x25519_public(base64.b64encode(der[-32:]).decode())
+
+
+def x25519_public(private_b64):
+    raw = base64.b64decode(private_b64)
+    if len(raw) != 32:
+        die("not a WireGuard private key")
+    der = bytes.fromhex("302e020100300506032b656e04220420") + raw      # PKCS#8 wrapper of a raw X25519 key
+    pub = subprocess.run(["openssl", "pkey", "-inform", "DER", "-pubout", "-outform", "DER"], input=der, check=True, stdout=subprocess.PIPE).stdout
+    return base64.b64encode(pub[-32:]).decode()
+
+
+def load(path, mod):
+    with open(path) as f:
+        return mod.check(mod.decode(f.read()))
+
+
+def cmd_new(a, mod):
+    p = {"v": 1, "name": a.name}
+    if a.wg_address:
+        for need in ("wg_peer_key", "wg_endpoint", "wg_allowed"):
+            if not getattr(a, need):
+                die("--wg-address also needs --wg-peer-key, --wg-endpoint and --wg-allowed")
+        priv = read1(a.wg_private_key_file) if a.wg_private_key_file else x25519_keypair()[0]
+        p["wireguard"] = {"address": a.wg_address, "private_key": priv, "peer_public_key": a.wg_peer_key,
+                          "endpoint": a.wg_endpoint, "allowed_ips": a.wg_allowed.split(",")}
+    if a.ssh_key:
+        p["ssh"] = {"authorized_keys": [read1(k) for k in a.ssh_key]}
+        if a.ssh_port:
+            p["ssh"]["port"] = a.ssh_port
+        if a.ssh_listen:
+            p["ssh"]["listen"] = a.ssh_listen.split(",")
+    if a.repo:
+        p["bootstrap"] = {"repo": a.repo}
+        if a.branch:
+            p["bootstrap"]["branch"] = a.branch
+        if a.passphrase_file:
+            p["bootstrap"]["age_passphrase"] = read1(a.passphrase_file)
+        if a.gh_token_file:
+            p["bootstrap"]["gh_token"] = read1(a.gh_token_file)
+    mod.check(json.loads(json.dumps(p)))
+    fd = os.open(a.output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(p, f, indent=1)
+        f.write("\n")
+    print("wrote %s (%s)" % (a.output, ", ".join(s for s in ("wireguard", "ssh", "bootstrap") if s in p)))
+    if "wireguard" in p:
+        print("wireguard public key: " + x25519_public(p["wireguard"]["private_key"]))
+
+
+def cmd_show(a, mod):
+    p = load(a.file, mod)
+    for sec, keys in (("wireguard", ("private_key", "preshared_key")), ("bootstrap", ("age_passphrase", "gh_token"))):
+        for k in keys:
+            if k in p.get(sec, {}):
+                p[sec][k] = "<%d characters>" % len(p[sec][k])
+    if "wireguard" in p:
+        p["wireguard"]["public_key"] = x25519_public(load(a.file, mod)["wireguard"]["private_key"])
+    print(json.dumps(p, indent=1))
+
+
+def cli():
+    c = os.environ.get("AOHP_CLI")
+    if c:
+        return shlex.split(c)
+    if shutil.which("aohp"):
+        return ["aohp"]
+    die('no aohp CLI: put "aohp" on PATH or set AOHP_CLI')
+
+
+def bridge(url, args, **kw):
+    env = dict(os.environ)
+    env.pop("NODE_OPTIONS", None)
+    return subprocess.run(cli() + ["-u", url] + args, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kw)
+
+
+def env_exec(url, envname, command, timeout_s):
+    r = bridge(url, ["sandbox", "exec", "-T", str(timeout_s * 1000), envname, command], timeout=timeout_s + 30)
+    try:
+        j = json.loads(r.stdout[r.stdout.index("{"):])
+        return j.get("exitCode", 1), j.get("stdout", "") + j.get("stderr", "")
+    except ValueError:
+        return 1, r.stdout
+
+
+def cmd_adb(a, mod):
+    payload = mod.encode(load(a.file, mod))
+    url = "ws://127.0.0.1:%d" % a.port
+    adb = ["adb", "-s", a.serial]
+    subprocess.run(adb + ["forward", "tcp:%d" % a.port, "tcp:6666"], check=True, stdout=subprocess.DEVNULL)
+    try:
+        if a.push_tool:
+            with open(TOOL, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            env_exec(url, a.env, "rm -f /tmp/.aohp-setup.b64", 20)
+            for i in range(0, len(b64), 6000):
+                rc, out = env_exec(url, a.env, "printf %%s '%s' >> /tmp/.aohp-setup.b64" % b64[i:i + 6000], 20)
+                if rc != 0:
+                    die("could not copy aohp-setup into the env: " + out[-200:])
+            rc, out = env_exec(url, a.env, "base64 -d /tmp/.aohp-setup.b64 > /usr/local/bin/aohp-setup && chmod 755 /usr/local/bin/aohp-setup; rm -f /tmp/.aohp-setup.b64; aohp-setup status >/dev/null && echo pushed", 30)
+            if "pushed" not in out:
+                die("the copied aohp-setup does not run in the env: " + out[-300:])
+            print("copied this checkout's aohp-setup into env %s" % a.env)
+        r = bridge(url, ["secret", "set", SECRET_NAME], input=payload, timeout=60)
+        if r.returncode != 0:
+            die("could not hand the profile to the phone: " + r.stdout[-200:])
+        command = ("rm -f %(log)s; ( command -v aohp-setup >/dev/null || aohp-update; umask 077; "
+                   "aohp secret get %(name)s > %(file)s || exit 4; aohp-setup apply %(file)s ) > %(log)s 2>&1; ec=$?; "
+                   "rm -f %(file)s; echo __EXIT__=$ec >> %(log)s; exit $ec") % {"log": ENV_LOG, "name": SECRET_NAME, "file": ENV_FILE}
+        rc, out = env_exec(url, a.env, command, 1800)
+        bridge(url, ["secret", "delete", SECRET_NAME], timeout=60)
+        _, text = env_exec(url, a.env, "cat %s" % ENV_LOG, 30)
+        print(text.rstrip())
+        return rc
+    finally:
+        bridge(url, ["secret", "delete", SECRET_NAME], timeout=60)
+        subprocess.run(adb + ["forward", "--remove", "tcp:%d" % a.port], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Build a setup profile and get it to a phone.", usage=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    n = sub.add_parser("new")
+    n.add_argument("-o", "--output", required=True); n.add_argument("--name", default="")
+    for o in ("--wg-address", "--wg-peer-key", "--wg-endpoint", "--wg-allowed", "--wg-private-key-file",
+              "--ssh-listen", "--repo", "--branch", "--passphrase-file", "--gh-token-file"):
+        n.add_argument(o)
+    n.add_argument("--ssh-key", action="append"); n.add_argument("--ssh-port", type=int)
+    for c in ("pubkey", "show", "payload", "qr"):
+        sub.add_parser(c).add_argument("file")
+    d = sub.add_parser("adb")
+    d.add_argument("file"); d.add_argument("--serial", required=True); d.add_argument("--env", default="oc")
+    d.add_argument("--port", type=int, default=27680); d.add_argument("--push-tool", action="store_true")
+    a = ap.parse_args()
+    mod = setup_module()
+    try:
+        if a.cmd == "new":
+            cmd_new(a, mod)
+        elif a.cmd == "pubkey":
+            p = load(a.file, mod)
+            print(x25519_public(p["wireguard"]["private_key"]) if "wireguard" in p else die("the profile has no wireguard section"))
+        elif a.cmd == "show":
+            cmd_show(a, mod)
+        elif a.cmd == "payload":
+            print(mod.encode(load(a.file, mod)))
+        elif a.cmd == "qr":
+            if not shutil.which("qrencode"):
+                die("qrencode is not installed")
+            subprocess.run(["qrencode", "-t", "ANSIUTF8", "-l", "L", "-m", "2"], input=mod.encode(load(a.file, mod)), text=True, check=True)
+        elif a.cmd == "adb":
+            sys.exit(cmd_adb(a, mod))
+    except mod.Bad as e:
+        die(str(e))
+    except OSError as e:
+        die("%s: %s" % (e.filename or "file", e.strerror))
+
+
+if __name__ == "__main__":
+    main()

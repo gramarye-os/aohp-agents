@@ -55,6 +55,43 @@ Note: `aohp sandbox svc-stop` currently only kills the `/bin/sh -c` wrapper, not
 service process itself; after changing secrets, kill the old gateway (`pkill -f '^openclaw-gateway'`)
 before `svc-start`, or the stale process keeps the port.
 
+## Setup profile (tunnel, ssh and bootstrap in one step)
+
+`aohp-setup` applies one profile inside the container: a WireGuard tunnel, an sshd bound to it, and the bootstrap
+above. Each part is optional. It is the way to set a phone up without typing on it:
+
+```
+# on a workstation: build the profile (a new WireGuard key pair is made here), register the phone's public key
+# at the other end of the tunnel, then send the profile over adb
+tools/aohp-setup-profile new -o phone.json --name myphone \
+    --wg-address 10.100.0.6/24 --wg-peer-key <hub public key> --wg-endpoint vpn.example.org:51820 \
+    --wg-allowed 10.100.0.0/24 --ssh-key ~/.ssh/id_ed25519.pub \
+    --repo <user>/<config-repo> --branch main --passphrase-file ~/.config/aohp/age-passphrase
+tools/aohp-setup-profile adb phone.json --serial <adb serial>      # needs the aohp CLI (AOHP_CLI or PATH)
+tools/aohp-setup-profile qr phone.json                             # or: draw it as a QR code on the terminal
+
+# inside the container
+aohp-setup apply <file>      # the profile as JSON, or the text a setup QR code carries; the file is removed after
+aohp-setup status            # what is set up; prints no secret
+```
+
+- **wireguard** writes `/etc/wireguard/wg0.conf` (split tunnel, with the routing table and `ip rule` lines Android
+  needs) and enables the `wg0` unit.
+- **ssh** writes the drop-in `/etc/ssh/sshd_config.d/10-aohp.conf` and `/root/.ssh/authorized_keys` and enables the
+  `sshd` unit. sshd listens on loopback and the tunnel address only, never on Wi-Fi or mobile data.
+- **bootstrap** runs `aohp-bootstrap` with the repo, branch, age passphrase and GitHub token from the profile.
+
+The tunnel and ssh come first, so the phone is reachable even when the bootstrap needs another try. Exit codes: 0 ok,
+2 bad profile, 5 wrong age passphrase, 10 wireguard, 11 ssh, 12 bootstrap. The profile format is documented at the top
+of [`bin/aohp-setup`](bin/aohp-setup).
+
+A profile and its QR code hold secrets in clear (tunnel key, passphrase, token). The file is written with mode 600;
+show the QR code on your own screen only. Over adb the profile travels through the phone's Keystore under a
+temporary name and is deleted there, and in the container, when the run ends.
+
+Tested 2026-11-19 on a OnePlus 13 over adb: tunnel and sshd up in 9 seconds, login over the tunnel from the
+workstation. Not tested yet: the QR route (needs a Driver that scans setup codes) and a restart of the phone.
+
 ## Network services (optional)
 
 The rootfs templates carry `wireguard-tools` + `openssh-server` and the kit in [`net/`](net/) (inactive by default):
