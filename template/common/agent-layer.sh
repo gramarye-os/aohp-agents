@@ -7,7 +7,7 @@
 #   - /root/.bashrc PATH/LANG/TERM, hostname aohp-dev
 # The aohp CLI and /opt/aohp-skills are COPY'd in by the Dockerfile before this runs (built in template/aohp-cli.Dockerfile).
 set -euo pipefail
-OPENCLAW_VERSION=${OPENCLAW_VERSION:-2026.9.6}
+OPENCLAW_VERSION=${OPENCLAW_VERSION:-2026.10.33}
 AOHP_AGENTS_REPO=${AOHP_AGENTS_REPO:-https://github.com/gramarye-os/aohp-agents.git}
 AOHP_AGENTS_REF=${AOHP_AGENTS_REF:-main}
 P=/tmp/provision

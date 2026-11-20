@@ -43,7 +43,7 @@ template/build-template.sh fedora amd64
 template/build-template.sh arch   arm64
 ```
 
-Knobs (env): `NODE_VERSION` (v24.21.0), `OPENCLAW_VERSION` (2026.9.6), `AOHP_AGENTS_REF` (branch of this repo
+Knobs (env): `NODE_VERSION` (v24.21.0), `OPENCLAW_VERSION` (2026.10.33), `AOHP_AGENTS_REF` (branch of this repo
 that gets cloned into the image; default `main`), `AOHP_REF`/`AOHP_REPO` (aohp CLI + skills), `FEDORA_IMAGE`,
 `ARCH_ARM64_IMAGE`, `ARCH_AMD64_IMAGE`, `DIST`, `KEEP_IMAGE=1`.
 
