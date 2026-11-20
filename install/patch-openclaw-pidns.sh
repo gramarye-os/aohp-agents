@@ -17,6 +17,7 @@ D=${1:-/usr/local/lib/node_modules/openclaw/dist}
 [ -d "$D" ] || { echo "patch-openclaw-pidns: no dist at $D" >&2; exit 1; }
 n=0
 for f in $(grep -rl 'statSync("/proc/self/ns/pid"' "$D" 2>/dev/null); do
+  case "$f" in *.aohp-orig*) continue;; esac   # our own backups still hold the old text
   grep -q 'catch { return "0"; }' "$f" && continue
   [ -f "$f.aohp-orig" ] || cp -a "$f" "$f.aohp-orig"
   python3 - "$f" <<'PY'
