@@ -157,8 +157,10 @@ want = {"baseUrl": "http://127.0.0.1:%s/v1" % port, "api": "openai-completions",
         "models": [{"id": alias, "name": alias + " (on this phone)", "reasoning": False, "input": ["text"],
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                     "contextWindow": ctx, "maxTokens": min(4096, ctx // 4)}]}
-same = isinstance(cur, dict) and cur.get("baseUrl") == want["baseUrl"] and [m.get("id") for m in cur.get("models", [])] == [alias] \
-    and (cur.get("models") or [{}])[0].get("contextWindow") == ctx
+# Already there: the provider points at this server and lists the model with this window. A config may
+# list more models than the one that runs now (the others are for `aohp-llm use`); that is left alone.
+mine = [m for m in (cur.get("models", []) if isinstance(cur, dict) else []) if m.get("id") == alias]
+same = isinstance(cur, dict) and cur.get("baseUrl") == want["baseUrl"] and bool(mine) and mine[0].get("contextWindow") == ctx
 p = {}
 if not same: p["models"] = {"providers": {"local": want}}
 # An allow list that exists must name the provider; when there is none, every provider is allowed already.
