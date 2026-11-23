@@ -28,6 +28,9 @@ See [docs/flatpak.md](docs/flatpak.md).
 Containers with their own systemd (Droidspaces, arm64 phones): `aohp-container create <name>`, then
 `systemctl start ds-<name>`. See [docs/containers.md](docs/containers.md).
 
+A model that runs on the phone, usable from the gateway as `local/<name>`: `aohp-llm setup`. See
+[docs/llm.md](docs/llm.md).
+
 ## Bootstrap flow
 
 1. `gh auth login --web` — an 8-character device code you enter at github.com/login/device

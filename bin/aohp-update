@@ -19,7 +19,7 @@
 set -uo pipefail
 AGENTS_DIR=${AOHP_AGENTS_DIR:-/opt/aohp-agents}; OC_DIR=${OPENCLAW_HOME:-$HOME/.openclaw}
 BIN=/usr/local/bin; STATE=/var/lib/aohp-update
-BINS="aohp-update aohp-secrets aohp-setup age-pass cred-get cred-set cred-list cred-providers aohp-enable aohp-gateway aohp-webapp aohp-skills-sync aohp-container"
+BINS="aohp-update aohp-secrets aohp-setup age-pass cred-get cred-set cred-list cred-providers aohp-enable aohp-gateway aohp-webapp aohp-skills-sync aohp-container aohp-llm"
 export GIT_TERMINAL_PROMPT=0
 
 short() { git -C "$1" rev-parse --short HEAD 2>/dev/null; }
@@ -125,6 +125,8 @@ agents=openclaw; [ -f "$OC_DIR/aohp/agents" ] && agents=$(grep -vE '^\s*(#|$)' "
 for a in $agents; do bash "$AGENTS_DIR/install/$a.sh" || { echo "[update] install/$a.sh failed"; rc=1; }; done
 # Tessera's agent and the Droidspaces CLI, in an env that has the agent (the Debian templates do).
 [ ! -f /opt/tessera/agent.py ] || bash "$AGENTS_DIR/install/tessera.sh" || { echo "[update] install/tessera.sh failed"; rc=1; }
+# The local model, in an env whose config asks for one (~/.openclaw/aohp/llm, docs/llm.md).
+bash "$AGENTS_DIR/install/llm.sh" || { echo "[update] install/llm.sh failed"; rc=1; }
 summary="$a_msg${c_msg:+; $c_msg}"; [ $rc -eq 0 ] && summary="updated: $summary" || summary="FAILED: $summary"
 record "$rc" "$summary" "$(short "$AGENTS_DIR")" "$(short "$OC_DIR")"
 echo "[update] $summary"

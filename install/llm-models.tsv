@@ -1,0 +1,5 @@
+# Local models aohp-llm knows how to fetch (docs/llm.md). Tab-separated:
+# name	file	bytes	sha256	context	url
+# "context" is the window the server is started with unless --ctx is given.
+qwen3.5-4b	Qwen3.5-4B-Q4_K_M.gguf	2740937888	00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4	16384	https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
+qwen3.5-2b	Qwen3.5-2B-Q4_0.gguf	1214873856	cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1	8192	https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_0.gguf

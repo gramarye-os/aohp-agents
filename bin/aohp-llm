@@ -1,0 +1,225 @@
+#!/bin/bash
+# aohp-llm — the local model of this env (docs/llm.md).
+#
+#   aohp-llm setup [model] [--device auto|htp|cpu] [--ctx N] [--threads N]
+#        Fetch the model if it is not there, point the Driver's llama-server unit at it, add it to
+#        the OpenClaw gateway as provider "local", and note the choice in ~/.openclaw/aohp/llm so
+#        that aohp-update puts it back in a fresh env. Without a model: qwen3.5-4b on a phone
+#        with 11 GB of memory or more, qwen3.5-2b below that.
+#   aohp-llm status                 what runs, and whether the gateway knows it
+#   aohp-llm models                 the models that can be fetched, and which are on this phone
+#   aohp-llm fetch <model>          only download it to /opt/llm/models
+#   aohp-llm use <model> [options]  only point the llama-server unit at it
+#   aohp-llm openclaw [--disable]   only add it to (or take it out of) the gateway config
+#   aohp-llm apply                  what aohp-update runs: setup from ~/.openclaw/aohp/llm, if present
+#
+# The server itself belongs to the AOHP Driver: it ships llama-server, runs it on the Android side
+# (on the NPU where the phone has one it supports) and answers on http://127.0.0.1:8082/v1.
+set -euo pipefail
+DIR=/opt/llm/models
+LIST=${AOHP_LLM_MODELS:-/opt/aohp-agents/install/llm-models.tsv}
+OC_DIR=${OPENCLAW_HOME:-$HOME/.openclaw}
+CONF=$OC_DIR/aohp/llm
+ENVNAME=${AOHP_ENV:-$(cat /etc/aohp/env-name 2>/dev/null || hostname)}
+GW_UNIT=${AOHP_GATEWAY_UNIT:-openclaw-gateway.service}
+die() { echo "aohp-llm: $*" >&2; exit 1; }
+say() { echo "[llm] $*"; }
+usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# One request to the Driver. The request must be a single line: build it with python.
+rpc() {  # <method> [key=value ...]   (values that look like numbers or true/false are sent as such)
+  local m=$1 j; shift
+  j=$(python3 - "$ENVNAME" "$@" <<'PY'
+import json, sys
+o = {"env": sys.argv[1]}
+for kv in sys.argv[2:]:
+    k, v = kv.split("=", 1)
+    if v in ("true", "false"): v = (v == "true")
+    elif v.lstrip("-").isdigit(): v = int(v)
+    o[k] = v
+print(json.dumps(o))
+PY
+  )
+  timeout 90 aohp call "$m" "$j" 2>&1
+}
+jget() { python3 -c '
+import json, sys
+try: d = json.loads(sys.stdin.read())
+except Exception: sys.exit(0)
+for k in sys.argv[1].split("."):
+    d = d.get(k) if isinstance(d, dict) else None
+if d is not None: print(d if not isinstance(d, (dict, list)) else json.dumps(d))
+' "$1"; }
+
+row() { [ -f "$LIST" ] || die "model list missing: $LIST (run aohp-update)"; awk -F'\t' -v n="$1" '$1 == n { print; exit }' "$LIST"; }
+field() { printf '%s' "$1" | cut -f"$2"; }
+default_model() { local kb; kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo); if [ "${kb:-0}" -ge 11000000 ]; then echo qwen3.5-4b; else echo qwen3.5-2b; fi; }
+
+MODEL=; DEVICE=auto; CTX=; THREADS=
+parse() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --device) DEVICE=${2:-}; shift 2 || die "--device needs a value";;
+      --device=*) DEVICE=${1#*=}; shift;;
+      --ctx) CTX=${2:-}; shift 2 || die "--ctx needs a value";;
+      --ctx=*) CTX=${1#*=}; shift;;
+      --threads) THREADS=${2:-}; shift 2 || die "--threads needs a value";;
+      --threads=*) THREADS=${1#*=}; shift;;
+      -*) die "unknown option: $1";;
+      *) [ -z "$MODEL" ] || die "one model at a time"; MODEL=$1; shift;;
+    esac
+  done
+  case "$DEVICE" in auto|htp|cpu) ;; *) die "--device is auto, htp or cpu";; esac
+  [ -z "$CTX" ] || [[ "$CTX" =~ ^[0-9]+$ ]] || die "--ctx is a number";
+  [ -z "$THREADS" ] || [[ "$THREADS" =~ ^[0-9]+$ ]] || die "--threads is a number";
+}
+need_model() { [ -n "$MODEL" ] || die "which model? (aohp-llm models)"; ROW=$(row "$MODEL"); [ -n "$ROW" ] || die "unknown model '$MODEL' (aohp-llm models)"; FILE=$(field "$ROW" 2); }
+
+cmd_models() {
+  local n f b have
+  printf '%-12s %-28s %8s  %s\n' MODEL FILE SIZE HERE
+  grep -v '^#' "$LIST" | while IFS=$'\t' read -r n f b _; do
+    [ -n "$n" ] || continue
+    have=no; [ "$(stat -c %s "$DIR/$f" 2>/dev/null)" != "$b" ] || have=yes
+    printf '%-12s %-28s %6s M  %s\n' "$n" "$f" "$((b / 1048576))" "$have"
+  done
+}
+
+cmd_fetch() {
+  need_model
+  local bytes sha url; bytes=$(field "$ROW" 3); sha=$(field "$ROW" 4); url=$(field "$ROW" 6)
+  if [ "$(stat -c %s "$DIR/$FILE" 2>/dev/null)" = "$bytes" ]; then say "$FILE is already here"; return 0; fi
+  mkdir -p "$DIR"
+  say "downloading $FILE ($((bytes / 1048576)) MB)"
+  if [ "$(stat -c %s "$DIR/$FILE.part" 2>/dev/null)" != "$bytes" ]; then
+    curl -fL -C - --retry 3 -sS -o "$DIR/$FILE.part" "$url" || die "download failed (run it again to resume): $url"
+  fi
+  [ "$(stat -c %s "$DIR/$FILE.part")" = "$bytes" ] || die "$FILE.part has the wrong size (run it again to resume)"
+  say "checking it"
+  [ "$(sha256sum "$DIR/$FILE.part" | cut -d' ' -f1)" = "$sha" ] || { rm -f "$DIR/$FILE.part"; die "$FILE: checksum does not match, file removed"; }
+  mv "$DIR/$FILE.part" "$DIR/$FILE"
+  say "$FILE is in $DIR"
+}
+
+port() { local s; s=$(rpc llm.status | jget config.port); echo "${s:-8082}"; }
+healthy() { curl -fsS -m 3 "http://127.0.0.1:$(port)/health" 2>/dev/null | grep -q '"ok"'; }
+
+cmd_use() {
+  need_model
+  [ -f "$DIR/$FILE" ] || die "$FILE is not in $DIR (aohp-llm fetch $MODEL)"
+  local ctx=${CTX:-$(field "$ROW" 5)} st args out i
+  st=$(rpc llm.status)
+  if [ "$(printf '%s' "$st" | jget config.model)" = "$FILE" ] && [ "$(printf '%s' "$st" | jget config.alias)" = "$MODEL" ] \
+     && [ "$(printf '%s' "$st" | jget config.ctx)" = "$ctx" ] && [ "$(printf '%s' "$st" | jget config.threads)" = "${THREADS:-0}" ] \
+     && { [ "$DEVICE" = auto ] || [ "$(printf '%s' "$st" | jget config.device)" = "$DEVICE" ]; } && healthy; then
+    say "llama-server already runs $MODEL"; return 0
+  fi
+  args=(model="$FILE" alias="$MODEL" device="$DEVICE" ctx="$ctx")
+  [ -z "$THREADS" ] || args+=(threads="$THREADS")
+  out=$(rpc llm.configure "${args[@]}") || die "the Driver refused: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)"
+  [ -n "$(printf '%s' "$out" | jget unit)" ] || die "the Driver did not configure the unit: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-300)"
+  i=0; until healthy; do i=$((i+1)); [ $i -lt 90 ] || die "llama-server did not come up in 3 minutes (journalctl -u llama-server)"; sleep 2; done
+  say "llama-server runs $MODEL on $(rpc llm.status | jget config.device), context $ctx, http://127.0.0.1:$(port)/v1"
+}
+
+cmd_openclaw() {
+  command -v openclaw >/dev/null || die "no openclaw in this env"
+  local st alias ctx prt cur allow patch rc
+  if [ "${1:-}" = --disable ]; then
+    allow=$(openclaw config get agents.defaults.modelPolicy.allow 2>/dev/null | grep -v '^Config (' || true)
+    patch=$(python3 - "$allow" <<'PY'
+import json, sys
+try: allow = json.loads(sys.argv[1])
+except Exception: allow = None
+p = {"models": {"providers": {"local": None}}}
+if isinstance(allow, list) and "local/*" in allow: p["agents"] = {"defaults": {"modelPolicy": {"allow": [a for a in allow if a != "local/*"]}}}
+print(json.dumps(p))
+PY
+    )
+    printf '%s\n' "$patch" > /tmp/aohp-llm.$$.json5
+    openclaw config patch --file /tmp/aohp-llm.$$.json5 --confirm-array-removal 2>&1 | grep -v '^Config (' | tail -n 2; rc=${PIPESTATUS[0]}
+    rm -f /tmp/aohp-llm.$$.json5; [ "$rc" = 0 ] || die "the gateway config was not changed"
+    aohp unit restart "$ENVNAME" "$GW_UNIT" >/dev/null 2>&1 || true
+    say "provider local removed; gateway restarting"; return 0
+  fi
+  st=$(rpc llm.status); alias=$(printf '%s' "$st" | jget config.alias); ctx=$(printf '%s' "$st" | jget config.ctx); prt=$(printf '%s' "$st" | jget config.port)
+  [ -n "$alias" ] || die "no local model is configured yet (aohp-llm use <model>)"
+  cur=$(openclaw config get models.providers.local 2>/dev/null | grep -v '^Config (' || true)
+  allow=$(openclaw config get agents.defaults.modelPolicy.allow 2>/dev/null | grep -v '^Config (' || true)
+  patch=$(python3 - "$alias" "$ctx" "${prt:-8082}" "$cur" "$allow" <<'PY'
+import json, sys
+alias, ctx, port = sys.argv[1], int(sys.argv[2] or 8192), sys.argv[3]
+def load(s):
+    try: return json.loads(s)
+    except Exception: return None
+cur, allow = load(sys.argv[4]), load(sys.argv[5])
+want = {"baseUrl": "http://127.0.0.1:%s/v1" % port, "api": "openai-completions", "apiKey": "none",
+        "models": [{"id": alias, "name": alias + " (on this phone)", "reasoning": False, "input": ["text"],
+                    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                    "contextWindow": ctx, "maxTokens": min(4096, ctx // 4)}]}
+same = isinstance(cur, dict) and cur.get("baseUrl") == want["baseUrl"] and [m.get("id") for m in cur.get("models", [])] == [alias] \
+    and (cur.get("models") or [{}])[0].get("contextWindow") == ctx
+p = {}
+if not same: p["models"] = {"providers": {"local": want}}
+# An allow list that exists must name the provider; when there is none, every provider is allowed already.
+if isinstance(allow, list) and "local/*" not in allow: p["agents"] = {"defaults": {"modelPolicy": {"allow": allow + ["local/*"]}}}
+print(json.dumps(p) if p else "")
+PY
+  )
+  if [ -z "$patch" ]; then say "the gateway already has local/$alias"; return 0; fi
+  printf '%s\n' "$patch" > /tmp/aohp-llm.$$.json5
+  if openclaw config patch --dry-run --file /tmp/aohp-llm.$$.json5 2>&1 | grep -v '^Config (' | grep -qiE 'failed|error|invalid'; then
+    openclaw config patch --dry-run --file /tmp/aohp-llm.$$.json5 2>&1 | tail -n 6 >&2; rm -f /tmp/aohp-llm.$$.json5; die "the gateway refused the provider block"
+  fi
+  openclaw config patch --file /tmp/aohp-llm.$$.json5 2>&1 | grep -v '^Config (' | tail -n 2; rc=${PIPESTATUS[0]}
+  rm -f /tmp/aohp-llm.$$.json5; [ "$rc" = 0 ] || die "the gateway config was not changed"
+  # The gateway reads its providers at start (and config.patch's own restart does not fire under aohp units).
+  aohp unit restart "$ENVNAME" "$GW_UNIT" >/dev/null 2>&1 || say "WARNING: could not restart $GW_UNIT, restart it by hand"
+  say "gateway: provider local/$alias added (context $ctx); gateway restarting"
+}
+
+cmd_status() {
+  local st gw
+  st=$(rpc llm.status)
+  if [ -z "$(printf '%s' "$st" | jget config.model)" ]; then echo "llama-server: $(printf '%s' "$st" | jget unit | cut -c1-80)"; else
+    echo "llama-server: $(printf '%s' "$st" | jget config.alias) ($(printf '%s' "$st" | jget config.model)) on $(printf '%s' "$st" | jget config.device), context $(printf '%s' "$st" | jget config.ctx), port $(printf '%s' "$st" | jget config.port), unit $(printf '%s' "$st" | jget unit.active), health $(if healthy; then echo ok; else echo down; fi)"
+  fi
+  gw=$(openclaw config get models.providers.local 2>/dev/null | grep -v '^Config (' || true)
+  gw=$(printf '%s' "$gw" | python3 -c 'import json,sys
+try: d = json.loads(sys.stdin.read()); print(d.get("baseUrl"), "model", ", ".join(m.get("id", "?") for m in d.get("models", [])))
+except Exception: print("not configured")')
+  echo "gateway provider local: $gw"
+  echo "put back by aohp-update: $(if [ -f "$CONF" ]; then grep -vE '^\s*(#|$)' "$CONF" | head -n 1; else echo "no ($CONF is not there)"; fi)"
+}
+
+cmd_setup() {
+  [ -n "$MODEL" ] || MODEL=$(default_model)
+  cmd_fetch; cmd_use
+  if command -v openclaw >/dev/null; then cmd_openclaw; fi
+  mkdir -p "$(dirname "$CONF")"
+  { echo "# The local model of this env. Written by aohp-llm setup; aohp-update puts it back (docs/llm.md)."
+    echo "$MODEL --device $DEVICE${CTX:+ --ctx $CTX}${THREADS:+ --threads $THREADS}"; } > "$CONF"
+  say "noted in $CONF"
+}
+
+cmd_apply() {
+  [ -f "$CONF" ] || exit 0
+  local line; line=$(grep -vE '^\s*(#|$)' "$CONF" | head -n 1)
+  [ -n "$line" ] || exit 0
+  # shellcheck disable=SC2086
+  parse $line
+  cmd_setup
+}
+
+c=${1:-}; [ $# -eq 0 ] || shift
+case "$c" in
+  setup) parse "$@"; cmd_setup;;
+  status) cmd_status;;
+  models) cmd_models;;
+  fetch) parse "$@"; cmd_fetch;;
+  use) parse "$@"; cmd_use;;
+  openclaw) cmd_openclaw "${1:-}";;
+  apply) cmd_apply;;
+  -h|--help|help|"") usage;;
+  *) usage >&2; exit 1;;
+esac
