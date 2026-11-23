@@ -55,8 +55,12 @@ The script builds the CLI image once (native platform), then `podman build --pla
 ## Tessera and the GPU variant
 
 Every Debian build carries the agent of [Tessera](https://github.com/gramarye-os/tessera-linux), the
-Android launcher for Linux GUI apps: `common/tessera-layer.sh` takes the agent files from the
-commit `TESSERA_REF` and stages them (`/opt/tessera`, the enabled unit `tessera-agent.service`).
+Android launcher for Linux GUI apps: `common/tessera-layer.sh` runs `install/tessera.sh`, which takes
+the agent files from the commit pinned in `install/tessera.pin` and stages them (`/opt/tessera`, the
+enabled unit `tessera-agent.service`). The arm64 builds also get the
+[Droidspaces](https://github.com/ravindu644/Droidspaces-OSS) CLI (GPL-3.0-or-later, the release
+pinned in the same file) as `/usr/local/bin/droidspaces`, which the agent starts container apps with.
+`aohp-update` runs the same installer in an existing env.
 The pairing token is not in the template. The unit makes it on the phone the first time it starts,
 and `tessera-pair` then gives the code the app asks for.
 

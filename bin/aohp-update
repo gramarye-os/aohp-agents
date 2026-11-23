@@ -123,6 +123,8 @@ fi
 "$BIN/aohp-skills-sync" || { echo "[update] skills sync failed"; rc=1; }
 agents=openclaw; [ -f "$OC_DIR/aohp/agents" ] && agents=$(grep -vE '^\s*(#|$)' "$OC_DIR/aohp/agents" | tr '\n' ' ')
 for a in $agents; do bash "$AGENTS_DIR/install/$a.sh" || { echo "[update] install/$a.sh failed"; rc=1; }; done
+# Tessera's agent and the Droidspaces CLI, in an env that has the agent (the Debian templates do).
+[ ! -f /opt/tessera/agent.py ] || bash "$AGENTS_DIR/install/tessera.sh" || { echo "[update] install/tessera.sh failed"; rc=1; }
 summary="$a_msg${c_msg:+; $c_msg}"; [ $rc -eq 0 ] && summary="updated: $summary" || summary="FAILED: $summary"
 record "$rc" "$summary" "$(short "$AGENTS_DIR")" "$(short "$OC_DIR")"
 echo "[update] $summary"

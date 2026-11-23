@@ -1,0 +1,13 @@
+# Tessera's side of an env, pinned once: read by install/tessera.sh (aohp-update, template builds)
+# and by template/build-template.sh. Shell assignments only.
+# The agent files come from this commit of TESSERA_REPO (gramarye/): v0.8.0-gramarye.1.
+TESSERA_REPO=gramarye-os/tessera-linux
+TESSERA_REF=b9a245b301708720ded66c93ba379b3b30d422a9
+# The Droidspaces CLI (GPL-3.0-or-later, source at the tag), the same build the phone images
+# carry as /system/bin/droidspaces: release tarball and the arm64 binary in it, by sha256.
+DROIDSPACES_REPO=ravindu644/Droidspaces-OSS
+DROIDSPACES_TAG=v7.2.0
+DROIDSPACES_ASSET=droidspaces-v7.2.0-cdadb9eb.tar.gz
+DROIDSPACES_ASSET_SHA256=522228a09a8feee515b87fc628072c7af19b47c9b21f73dcca0a9cd835179773
+DROIDSPACES_MEMBER=droidspaces-v7.2.0/aarch64/droidspaces
+DROIDSPACES_SHA256=54dac6cc9cdc18a9cc61eeaaf7587c25dadd65e20e544a4f470e4b77c9e5db07

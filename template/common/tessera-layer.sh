@@ -2,24 +2,20 @@
 # Tessera layer of a template: the agent that Tessera (the Android launcher for Linux apps) talks to,
 # and for the GPU variant the graphics libraries plus a Mesa built for Adreno GPUs through Android's
 # kgsl device. Run after agent-layer.sh, before cleanup.sh.
-#   TESSERA_REF      commit of TESSERA_REPO the agent files are taken from (required)
+#   TESSERA_REF      commit of the Tessera repository the agent files are taken from; empty = the
+#                    pin in /opt/aohp-agents/install/tessera.pin, which also names the Droidspaces CLI
 #   GPU=1            also install the graphics stack and the Mesa tarball (Debian arm64 only)
 #   MESA_URL, MESA_SHA256   the Mesa tarball and its pin (required with GPU=1)
 # The agent's token is NOT made here: it must differ per phone. The agent's unit makes it on first
 # start (setup.sh in the Tessera repository).
 set -eu
-TESSERA_REPO=${TESSERA_REPO:-gramarye-os/tessera-linux}
-TESSERA_REF=${TESSERA_REF:?commit of $TESSERA_REPO}
 GPU=${GPU:-0}
 
-d=$(mktemp -d)
-for f in agent.py enter.sh setup.sh v4l_links.py install.sh tessera-agent.service; do
-  curl -fsSL --retry 3 -o "$d/$f" "https://raw.githubusercontent.com/$TESSERA_REPO/$TESSERA_REF/gramarye/$f"
-done
-TESSERA_STAGE=1 sh "$d/install.sh"
-echo "$TESSERA_REF" > /opt/tessera/.source-commit
-rm -rf "$d"
+# The same installer aohp-update runs in an env (agent-layer.sh has put aohp-agents in place).
+TESSERA_STAGE=1 TESSERA_REF=${TESSERA_REF:-} bash /opt/aohp-agents/install/tessera.sh
+TESSERA_REF=$(cat /opt/tessera/.source-commit)
 test -L /etc/aohp/system/aohp.target.wants/tessera-agent.service
+[ "$(uname -m)" != aarch64 ] || test -x /usr/local/bin/droidspaces
 test ! -e /etc/tessera/token
 python3 -m py_compile /opt/tessera/agent.py
 

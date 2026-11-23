@@ -27,8 +27,9 @@ AOHP_REPO=${AOHP_REPO:-https://github.com/gramarye-os/aohp.git}
 ARCH_ARM64_IMAGE=${ARCH_ARM64_IMAGE:-docker.io/menci/archlinuxarm:base-devel}
 ARCH_AMD64_IMAGE=${ARCH_AMD64_IMAGE:-docker.io/library/archlinux:base-devel}
 FEDORA_IMAGE=${FEDORA_IMAGE:-registry.fedoraproject.org/fedora:44}
-# Tessera: the agent files come from this commit of gramarye-os/tessera-linux; the GPU variant also unpacks this Mesa.
-TESSERA_REF=${TESSERA_REF:-0f749fb83968093bb86a96f45700e38c2993a7d5}
+# Tessera: the agent files come from the commit pinned in install/tessera.pin (with the Droidspaces CLI);
+# the GPU variant also unpacks this Mesa.
+TESSERA_REF=${TESSERA_REF:-$(sed -n 's/^TESSERA_REF=//p' "$HERE/../install/tessera.pin")}
 MESA_URL=${MESA_URL:-https://github.com/gramarye-os/tessera-linux/releases/download/v0.7.0-gramarye.1/mesa-kgsl_27.0.0-devel-g6939216a65_debian_trixie_arm64.tar.gz}
 MESA_SHA256=${MESA_SHA256:-8a294f395e48ccca6c12f0fe4f12c9dfaed74fbb7cb4bab99d2473fe90be8bc3}
 VARIANT=${VARIANT:-}

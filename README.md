@@ -112,9 +112,12 @@ Driver (≥ 0.3.0) records the service and restarts it at boot. Details: [templa
 | `install/claude-code.sh` | Claude Code CLI (npm) |
 | `install/codex.sh` | OpenAI Codex CLI (npm) |
 | `install/opencode.sh` | OpenCode (official installer) |
+| `install/tessera.sh` | Tessera's agent and the Droidspaces CLI, at the versions in `install/tessera.pin` |
 
 Each is idempotent and safe to re-run. `aohp-update` = `git pull` + re-run the installers
-listed in your config repo.
+listed in your config repo. It also runs `install/tessera.sh` in an env that has Tessera's agent:
+the pairing is kept, and the agent is restarted only when its files changed (that ends the
+Tessera sessions that are open).
 
 ## Layout of a config repo
 
