@@ -1,0 +1,9 @@
+# What install/everos.sh installs (docs/everos.md).
+# EverOS itself: the same commit the server that writes the store runs.
+EVEROS_REPO=https://github.com/EverMind-AI/EverOS
+EVEROS_REF=962c63eeaae5093b495a4763c161f8b046d41bc2
+# The embedding model, the same file the writing server uses, so that its index can be used as it is.
+EMBED_FILE=Qwen3-Embedding-0.6B-Q8_0.gguf
+EMBED_BYTES=639150592
+EMBED_SHA256=06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439
+EMBED_URL=https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf

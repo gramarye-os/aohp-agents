@@ -1,0 +1,18 @@
+# The embedding server of this env: Qwen3-Embedding-0.6B on the CPU, on 127.0.0.1:8025 (OpenAI-style
+# /v1/embeddings). EverOS uses it, and so can the gateway's memory search. It is a second instance of the
+# Driver's own llama-server (docs/everos.md). Installed by install/everos.sh.
+[Unit]
+Description=Embedding server (Qwen3-Embedding-0.6B, cpu) on 127.0.0.1:8025
+After=llama-server.service
+ConditionPathExists=/opt/llm/models/Qwen3-Embedding-0.6B-Q8_0.gguf
+
+[Service]
+Type=simple
+HostExec=yes
+ExecStart=exec /system/bin/sh $AOHP_ROOTFS/usr/local/lib/aohp/llama-run.sh -m $AOHP_ROOTFS/opt/llm/models/Qwen3-Embedding-0.6B-Q8_0.gguf --alias Qwen/Qwen3-Embedding-0.6B --embedding --pooling last --device none -ngl 0 -t 4 --ctx-size 8192 -b 4096 -ub 1024 --parallel 2 --host 127.0.0.1 --port 8025 --no-webui
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=aohp.target

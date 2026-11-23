@@ -31,6 +31,9 @@ Containers with their own systemd (Droidspaces, arm64 phones): `aohp-container c
 A model that runs on the phone, usable from the gateway as `local/<name>`: `aohp-llm setup`. See
 [docs/llm.md](docs/llm.md).
 
+A local, read-only copy of an EverOS memory store that another host writes: see
+[docs/everos.md](docs/everos.md).
+
 ## Bootstrap flow
 
 1. `gh auth login --web` — an 8-character device code you enter at github.com/login/device

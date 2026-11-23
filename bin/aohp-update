@@ -127,6 +127,8 @@ for a in $agents; do bash "$AGENTS_DIR/install/$a.sh" || { echo "[update] instal
 [ ! -f /opt/tessera/agent.py ] || bash "$AGENTS_DIR/install/tessera.sh" || { echo "[update] install/tessera.sh failed"; rc=1; }
 # The local model, in an env whose config asks for one (~/.openclaw/aohp/llm, docs/llm.md).
 bash "$AGENTS_DIR/install/llm.sh" || { echo "[update] install/llm.sh failed"; rc=1; }
+# A local copy of an EverOS memory store, in an env whose config asks for one (~/.openclaw/aohp/everos, docs/everos.md).
+bash "$AGENTS_DIR/install/everos.sh" || { echo "[update] install/everos.sh failed"; rc=1; }
 summary="$a_msg${c_msg:+; $c_msg}"; [ $rc -eq 0 ] && summary="updated: $summary" || summary="FAILED: $summary"
 record "$rc" "$summary" "$(short "$AGENTS_DIR")" "$(short "$OC_DIR")"
 echo "[update] $summary"

@@ -1,0 +1,19 @@
+# EverOS on this phone: a read-only copy that only searches. The store and its index are delivered
+# from the host that writes them (docs/everos.md). Installed by install/everos.sh.
+[Unit]
+Description=EverOS memory server, local copy (127.0.0.1:8014)
+Requires=everos-embed.service
+After=everos-embed.service
+ConditionPathExists=/root/everos/root/everos.toml
+
+[Service]
+Type=simple
+WorkingDirectory=/root/everos/EverOS
+EnvironmentFile=/root/everos/phone.env
+ExecStart=/root/everos/EverOS/.venv/bin/everos server start --root /root/everos/root
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=aohp.target
