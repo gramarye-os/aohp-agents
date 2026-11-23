@@ -19,7 +19,7 @@
 set -uo pipefail
 AGENTS_DIR=${AOHP_AGENTS_DIR:-/opt/aohp-agents}; OC_DIR=${OPENCLAW_HOME:-$HOME/.openclaw}
 BIN=/usr/local/bin; STATE=/var/lib/aohp-update
-BINS="aohp-update aohp-secrets aohp-setup age-pass cred-get cred-set cred-list cred-providers aohp-enable aohp-gateway aohp-webapp aohp-skills-sync"
+BINS="aohp-update aohp-secrets aohp-setup age-pass cred-get cred-set cred-list cred-providers aohp-enable aohp-gateway aohp-webapp aohp-skills-sync aohp-container"
 export GIT_TERMINAL_PROMPT=0
 
 short() { git -C "$1" rev-parse --short HEAD 2>/dev/null; }

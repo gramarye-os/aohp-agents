@@ -1,0 +1,17 @@
+# Droidspaces daemon for the containers of this env (docs/containers.md). Installed, not enabled.
+# HostExec: it runs on the Android side from the env's own copy of the binary, in the env's SELinux
+# domain. AOHP_ROOTFS is the env's root as seen from there.
+[Unit]
+Description=Droidspaces daemon (containers of this env)
+ConditionPathExists=/usr/local/bin/droidspaces
+
+[Service]
+Type=simple
+HostExec=yes
+ExecStartPre=/system/bin/sh $AOHP_ROOTFS/usr/local/lib/aohp/droidspaces-host.sh save
+ExecStart=exec $AOHP_ROOTFS/usr/local/bin/droidspaces daemon --foreground
+ExecStop=/system/bin/sh $AOHP_ROOTFS/usr/local/lib/aohp/droidspaces-host.sh stop
+TimeoutStopSec=180
+
+[Install]
+WantedBy=aohp.target

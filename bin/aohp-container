@@ -1,0 +1,204 @@
+#!/bin/bash
+# aohp-container — make and manage Droidspaces containers of this env (docs/containers.md).
+#
+#   aohp-container create <name> [--net nat|host|none] [--no-gpu] [--hostname H]
+#        Copy the env's Debian template to /var/lib/droidspaces/<name>/rootfs, fix the copy so it
+#        boots with systemd, and write the unit ds-<name>.service. Nothing is started or enabled.
+#   aohp-container unit <name> [same options]   (re)write ds-<name>.service for an existing rootfs
+#   aohp-container list                         containers, whether they run and start with the env
+#   aohp-container remove <name> [-y]           stop it, delete its unit and its files
+#
+# Start one with `systemctl start ds-<name>` (this starts droidspacesd.service too) and get a shell
+# with `droidspaces --name=<name> enter`. `systemctl enable droidspacesd ds-<name>` starts it with
+# the env. `systemctl stop droidspacesd` stops every container and puts the phone's settings back.
+set -euo pipefail
+BASE=/var/lib/droidspaces; SYS=/etc/aohp/system; DS=/usr/local/bin/droidspaces
+die() { echo "aohp-container: $*" >&2; exit 1; }
+say() { echo "[container] $*"; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# The env's root is an overlay: the lower layer is the template, the upper layer sits in the env's
+# directory on the Android side. Droidspaces runs on the Android side and takes paths from there.
+overlay_opt() { awk '$5=="/" {print $NF}' /proc/self/mountinfo | tr ',' '\n' | sed -n "s/^$1=//p" | head -n 1; }
+host_paths() {
+  local up
+  TPL=$(overlay_opt lowerdir); up=$(overlay_opt upperdir)
+  [ -n "$TPL" ] && [ -n "$up" ] || die "the root of this env is not a template overlay (no lowerdir/upperdir in /proc/self/mountinfo)"
+  case "$TPL" in *:*) die "this env has more than one lower layer ($TPL): not supported";; esac
+  HR=$(dirname "$up")/rootfs
+}
+valid_name() { [[ "${1:-}" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "a name is lower-case letters, digits and '-', starting with a letter (got '${1:-}')"; }
+running() { "$DS" --json show 2>/dev/null | tr ',{[' '\n\n\n' | sed -n 's/^"name":"\([^"]*\)".*/\1/p'; }
+is_running() { running | grep -qx "$1"; }
+
+NET=nat; GPU=1; HOSTN=
+parse_opts() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --net) NET=${2:-}; shift; shift || true;;
+      --net=*) NET=${1#--net=}; shift;;
+      --no-gpu) GPU=; shift;;
+      --hostname) HOSTN=${2:-}; shift; shift || true;;
+      --hostname=*) HOSTN=${1#--hostname=}; shift;;
+      *) die "unknown option: $1";;
+    esac
+  done
+  case "$NET" in nat|host|none) ;; *) die "--net is nat, host or none";; esac
+  [ -z "$HOSTN" ] || [[ "$HOSTN" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,62}$ ]] || die "bad hostname: $HOSTN"
+}
+
+write_unit() {  # <name>
+  local n=$1 h=${HOSTN:-$1} opts
+  [ -f "$BASE/$n/rootfs/etc/hostname" ] || die "$BASE/$n/rootfs is not a container made by aohp-container"
+  opts="--name=$n --rootfs=$HR$BASE/$n/rootfs --hostname=$h --net=$NET"
+  [ -z "$GPU" ] || opts="$opts --gpu"
+  # Tessera starts apps "in" a container through the env's agent: the agent's files and the X
+  # socket directory have to be at the same paths inside.
+  if [ -d /opt/tessera ]; then
+    mkdir -p /var/lib/tessera/x
+    opts="$opts --bind=$HR/var/lib/tessera/x:/var/lib/tessera/x --bind=$HR/opt/tessera:/opt/tessera:ro"
+  fi
+  cat > "$SYS/ds-$n.service" <<EOF
+# Droidspaces container "$n" of this env. Written by aohp-container (docs/containers.md).
+# Rewrite it with: aohp-container unit $n [options]
+[Unit]
+Description=Container $n (Droidspaces)
+Requires=droidspacesd.service
+After=droidspacesd.service
+ConditionPathExists=$BASE/$n/rootfs/etc/hostname
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/local/bin/aohp-container wait-daemon
+ExecStart=$DS $opts start
+ExecStop=$DS --name=$n stop
+TimeoutStartSec=180
+TimeoutStopSec=90
+
+[Install]
+WantedBy=aohp.target
+EOF
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  say "wrote $SYS/ds-$n.service"
+}
+
+cmd_create() {
+  local n=${1:-}; valid_name "$n"; shift; parse_opts "$@"
+  [ -x "$DS" ] || die "$DS is missing (run aohp-update)"
+  [ -f "$SYS/droidspacesd.service" ] || die "$SYS/droidspacesd.service is missing (run aohp-update)"
+  host_paths
+  local R=$BASE/$n/rootfs u=ds-mkrootfs-$n h=${HOSTN:-$n} rc=0 f
+  [ ! -e "$BASE/$n" ] || die "$BASE/$n exists already"
+  mkdir -p "$BASE/$n"
+  say "copying the template $(basename "$TPL") to $R (about 2 GB, a minute or two)"
+  # The env cannot see the template itself: a one-shot unit on the Android side copies it.
+  cat > "$SYS/$u.service" <<EOF
+[Unit]
+Description=Copy the env template for container $n
+[Service]
+Type=oneshot
+HostExec=yes
+ExecStart=/system/bin/cp -a $TPL $HR$R
+TimeoutStartSec=1800
+EOF
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl start "$u" >/dev/null 2>&1 || rc=$?
+  while [ "$(systemctl is-active "$u" 2>/dev/null | tail -n 1)" = activating ]; do sleep 2; done
+  [ "$(systemctl is-failed "$u" 2>/dev/null | tail -n 1)" != failed ] || rc=1
+  rm -f "$SYS/$u.service"; systemctl daemon-reload >/dev/null 2>&1 || true
+  if [ $rc -ne 0 ] || [ ! -d "$R/etc" ] || [ ! -e "$R/lib/systemd/systemd" ]; then
+    rm -rf --one-file-system "${BASE:?}/${n:?}"
+    die "the copy failed, or the template has no systemd (journalctl -u $u)"
+  fi
+
+  say "fixing the copy"
+  ln -sfn /lib/systemd/systemd "$R/usr/sbin/init"
+  echo "$h" > "$R/etc/hostname"; : > "$R/etc/machine-id"
+  grep -q "[[:space:]]$h\$" "$R/etc/hosts" 2>/dev/null || echo "127.0.1.1 $h" >> "$R/etc/hosts"
+  # The template is an env: its systemctl and journalctl are aohp's stand-ins, which would hide the
+  # real ones in a container that runs systemd.
+  for f in systemctl journalctl; do
+    if grep -q "SHIM for AOHP" "$R/usr/local/bin/$f" 2>/dev/null; then rm -f "$R/usr/local/bin/$f"; fi
+  done
+  # The template ships without ssh host keys so that every system makes its own.
+  [ ! -d "$R/etc/ssh" ] || ssh-keygen -A -f "$R" >/dev/null 2>&1 || say "WARNING: ssh-keygen failed, sshd will not start in the container"
+  if [ "$NET" = nat ]; then
+    mkdir -p "$R/etc/systemd/network" "$R/etc/systemd/system/multi-user.target.wants" "$R/etc/systemd/system/sockets.target.wants"
+    printf '[Match]\nName=eth0\n\n[Network]\nDHCP=ipv4\nIPv6AcceptRA=yes\n' > "$R/etc/systemd/network/20-eth0.network"
+    ln -sfn /lib/systemd/system/systemd-networkd.service "$R/etc/systemd/system/multi-user.target.wants/systemd-networkd.service"
+    ln -sfn /lib/systemd/system/systemd-networkd.socket "$R/etc/systemd/system/sockets.target.wants/systemd-networkd.socket"
+  fi
+  # logind needs the system bus, which the template does not have.
+  if [ ! -e "$R/usr/lib/systemd/system/dbus.service" ]; then
+    say "installing dbus in the copy"
+    if chroot "$R" /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq --no-install-recommends dbus' >"$BASE/$n/dbus-install.log" 2>&1; then
+      rm -f "$BASE/$n/dbus-install.log"
+    else
+      say "WARNING: dbus was not installed (see $BASE/$n/dbus-install.log). In the running container: apt install dbus"
+    fi
+  fi
+  write_unit "$n"
+  say "done. Start it:    systemctl start ds-$n"
+  say "      Shell in it: droidspaces --name=$n enter"
+  say "      With the env: systemctl enable droidspacesd ds-$n"
+}
+
+cmd_unit() {
+  local n=${1:-}; valid_name "$n"; shift; parse_opts "$@"
+  [ -d "$BASE/$n/rootfs" ] || die "no container $n in $BASE"
+  host_paths; write_unit "$n"
+}
+
+cmd_list() {
+  local d n r b
+  printf '%-18s %-8s %-9s %s\n' NAME RUNNING WITH-ENV ROOTFS
+  for d in "$BASE"/*/rootfs; do
+    [ -d "$d" ] || continue
+    n=$(basename "$(dirname "$d")")
+    r=no; ! is_running "$n" || r=yes
+    b=no; [ ! -e "$SYS/aohp.target.wants/ds-$n.service" ] || b=yes
+    [ -f "$SYS/ds-$n.service" ] || b="no unit"
+    printf '%-18s %-8s %-9s %s\n' "$n" "$r" "$b" "$d"
+  done
+}
+
+cmd_remove() {
+  local n=${1:-} yes=${2:-} a
+  valid_name "$n"
+  [ -d "$BASE/$n" ] || die "no container $n in $BASE"
+  if [ "$yes" != -y ]; then
+    read -r -p "Delete container $n and all its files in $BASE/$n? [y/N] " a
+    [ "$a" = y ] || [ "$a" = Y ] || die "not removed"
+  fi
+  if [ -f "$SYS/ds-$n.service" ]; then
+    systemctl stop "ds-$n" >/dev/null 2>&1 || true
+    systemctl disable "ds-$n" >/dev/null 2>&1 || true
+  fi
+  ! is_running "$n" || "$DS" --name="$n" stop >/dev/null 2>&1 || true
+  ! is_running "$n" || die "$n is still running: not removed"
+  rm -f "$SYS/ds-$n.service" "$SYS/aohp.target.wants/ds-$n.service"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  rm -rf --one-file-system "${BASE:?}/${n:?}"
+  say "removed $n"
+}
+
+# Used by the container units: the daemon unit is "started" as soon as its process exists.
+cmd_wait_daemon() {
+  local i=0
+  while [ $i -lt 40 ]; do
+    ! grep -q '@droidspaces$' /proc/net/unix 2>/dev/null || exit 0
+    i=$((i+1)); sleep 0.5
+  done
+  die "the Droidspaces daemon is not listening (systemctl status droidspacesd)"
+}
+
+case "${1:-}" in
+  create) shift; cmd_create "$@";;
+  unit) shift; cmd_unit "$@";;
+  list) cmd_list;;
+  remove) shift; cmd_remove "$@";;
+  wait-daemon) cmd_wait_daemon;;
+  -h|--help|help|"") usage;;
+  *) usage >&2; exit 1;;
+esac

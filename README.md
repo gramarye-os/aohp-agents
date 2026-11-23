@@ -25,6 +25,9 @@ units at boot (`Restart=on-failure`, timers). `wg0`, `sshd`, `net-watchdog.timer
 Flatpak apps (real bubblewrap sandbox, Flathub): `install/flatpak.sh`, then `aohp-flatpak install|run ...`.
 See [docs/flatpak.md](docs/flatpak.md).
 
+Containers with their own systemd (Droidspaces, arm64 phones): `aohp-container create <name>`, then
+`systemctl start ds-<name>`. See [docs/containers.md](docs/containers.md).
+
 ## Bootstrap flow
 
 1. `gh auth login --web` — an 8-character device code you enter at github.com/login/device

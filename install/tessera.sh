@@ -1,6 +1,7 @@
 #!/bin/bash
 # Tessera's side of an env: the agent the Tessera app talks to, and the Droidspaces CLI the agent
-# starts container apps with. Run by aohp-update in an env that has the agent, and by the template
+# starts container apps with, and the unit that runs the Droidspaces daemon for the env's own
+# containers. Run by aohp-update in an env that has the agent, and by the template
 # build (TESSERA_STAGE=1: files and the enabled unit only, nothing started).
 # What is installed is pinned in install/tessera.pin; TESSERA_REF in the environment overrides it.
 # The env's token and pairing (/etc/tessera) are kept. The agent is restarted only when one of its
@@ -50,4 +51,19 @@ else
   echo "$DROIDSPACES_SHA256  $d/$DROIDSPACES_MEMBER" | sha256sum -c - >/dev/null
   install -m 755 "$d/$DROIDSPACES_MEMBER" /usr/local/bin/droidspaces
   log "droidspaces $DROIDSPACES_TAG -> /usr/local/bin/droidspaces"
+fi
+
+# ---- the Droidspaces daemon unit ----------------------------------------------------------------
+# Lets an env run the daemon for containers of its own (docs/containers.md). Installed, never
+# enabled or started here. A droidspacesd.service.local marker keeps a hand-edited unit.
+if [ "$(uname -m)" = aarch64 ]; then
+  SYS=/etc/aohp/system
+  install -D -m 755 "$HERE/droidspaces/host.sh" /usr/local/lib/aohp/droidspaces-host.sh
+  if [ -e "$SYS/droidspacesd.service.local" ]; then
+    log "droidspacesd.service: kept local copy"
+  elif ! cmp -s "$HERE/droidspaces/droidspacesd.service" "$SYS/droidspacesd.service"; then
+    install -D -m 644 "$HERE/droidspaces/droidspacesd.service" "$SYS/droidspacesd.service"
+    [ -n "$STAGE" ] || systemctl daemon-reload >/dev/null 2>&1 || true
+    log "droidspacesd.service installed (not enabled)"
+  fi
 fi
