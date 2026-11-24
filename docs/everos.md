@@ -62,6 +62,27 @@ delivery, and name the new file in `ship.conf`.
 A host other than the writing one can deliver too, if it reaches both sides: set `EVEROS_SERVER` to
 the writing host's ssh name and `EVEROS_STORE` to a local clone of the store.
 
+## A laptop or another Linux host as a target
+
+The installer covers phone envs only. Another host can still take deliveries if it keeps the same
+layout in one folder, for example `~/everos`:
+
+- `EverOS/` (the pinned commit with its `.venv`), `root/` (the store repo) and `phone.env`,
+- `apply-index.sh` and `align-mtimes.py` from `install/everos/`,
+- a unit named `everos` that reads `phone.env` (a user unit when the login is not root), and an
+  embedding server on the port `everos.toml` names.
+
+On the writing host, name the target with its folder: `EVEROS_PHONES="oneplus13-wg frame-wg:everos"`.
+A folder without a leading `/` is under the login's home.
+
+## Starting without the network
+
+EverOS loads a token-counting encoding (tiktoken `o200k_base`) at every start. By default it
+downloads the file into `/tmp`, and it does not start when the file is gone and the download fails.
+The installer keeps a copy in `/root/everos/tiktoken-cache` and sets `TIKTOKEN_CACHE_DIR` in
+`phone.env`. On a host set up by hand, do the same; `everos.pin` has the URL, the file name and the
+checksum.
+
 ## Using it
 
 - `curl http://127.0.0.1:8014/health`

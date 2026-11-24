@@ -10,7 +10,9 @@
 #   EVEROS_SNAPSHOT  the snapshot folder on the writing host (snapshot-index.sh makes it)
 #   EVEROS_STORE     the store repo here: the store itself on the writing host, else a clone of it
 #   EVEROS_SHIP_DIR  folder for the logs and, away from the writing host, the copy of the snapshot
-#   EVEROS_PHONES    ssh names of the phones, used when none are given as arguments
+#   EVEROS_PHONES    ssh names of the phones, used when none are given as arguments. A target is
+#                    "name" (EverOS in /root/everos, a phone env) or "name:folder" (another host;
+#                    a folder without a leading / is under the login's home)
 #   EVEROS_SHIP_KEY  private key file the phones accept; empty: whatever ssh uses by default
 # Exit status: 0 every phone has the index, 2 a phone could not be reached, 1 anything else.
 here=$(cd "$(dirname "$0")" && pwd)
@@ -38,22 +40,23 @@ want=$(cat "$S/STORE_COMMIT" 2>/dev/null); [ -n "$want" ] || { echo "no index sn
 if [ "$SERVER" != local ]; then git -C "$STORE" cat-file -e "$want^{commit}" 2>/dev/null || git -C "$STORE" pull -q --ff-only; fi
 git -C "$STORE" cat-file -e "$want^{commit}" 2>/dev/null || { echo "the store in $STORE does not have commit ${want:0:7}"; exit 1; }
 rc=0
-for h in "$@"; do
-  have=$($SSH "$h" "test -d /root/everos/root/.git && { cat /root/everos/INDEX_STORE_COMMIT 2>/dev/null; echo; } || echo NOT-INSTALLED") || { echo "$h: cannot log in, will get it on a later run"; [ $rc = 0 ] && rc=2; continue; }
+for t in "$@"; do
+  h=${t%%:*}; R=/root/everos; case "$t" in *:*) R=${t#*:};; esac
+  have=$($SSH "$h" "test -d $R/root/.git && { cat $R/INDEX_STORE_COMMIT 2>/dev/null; echo; } || echo NOT-INSTALLED") || { echo "$h: cannot log in, will get it on a later run"; [ $rc = 0 ] && rc=2; continue; }
   have=$(echo "$have" | head -n 1)
   if [ "$have" = NOT-INSTALLED ]; then echo "$h: EverOS is not set up there (aohp/everos in its config, then aohp-update)"; rc=1; continue; fi
   if [ "$have" = "$want" ]; then echo "$h: index already at ${want:0:7}"; continue; fi
   # the store commit, into a branch of its own; the phone merges it when it switches
-  if ! GIT_SSH_COMMAND="$SSH" git -C "$STORE" push -q --force "$h:/root/everos/root" "$want:refs/heads/shipped" > "$D/build/push-$h.log" 2>&1; then
+  if ! GIT_SSH_COMMAND="$SSH" git -C "$STORE" push -q --force "$h:$R/root" "$want:refs/heads/shipped" > "$D/build/push-$h.log" 2>&1; then
     echo "$h: store push failed: $(tail -1 "$D/build/push-$h.log")"; rc=1; continue
   fi
-  # --copy-dest: files the phone already has in its live index are taken from there, so only the new
-  # files cross the network.
+  # --copy-dest (relative to index-next): files the phone already has in its live index are taken
+  # from there, so only the new files cross the network.
   if ! rsync -az --delete --partial --timeout=120 --no-owner --no-group --stats -e "$SSH" \
-       --copy-dest=/root/everos/root/.index "$S/" "$h:/root/everos/index-next/" > "$D/build/ship-$h.log" 2>&1; then
+       --copy-dest=../root/.index "$S/" "$h:$R/index-next/" > "$D/build/ship-$h.log" 2>&1; then
     echo "$h: copy failed: $(tail -1 "$D/build/ship-$h.log")"; rc=1; continue
   fi
   echo "$h: $(grep -E "^Total transferred file size|^Total bytes sent" "$D/build/ship-$h.log" | tr "\n" " ")"
-  $SSH "$h" "bash /root/everos/apply-index.sh" || { echo "$h: apply failed"; rc=1; }
+  $SSH "$h" "bash $R/apply-index.sh" || { echo "$h: apply failed"; rc=1; }
 done
 exit $rc

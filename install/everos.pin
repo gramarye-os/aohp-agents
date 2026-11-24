@@ -7,3 +7,8 @@ EMBED_FILE=Qwen3-Embedding-0.6B-Q8_0.gguf
 EMBED_BYTES=639150592
 EMBED_SHA256=06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439
 EMBED_URL=https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf
+
+# tiktoken's o200k_base encoding (the cache file name is the sha1 of the URL)
+TIKTOKEN_URL=https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken
+TIKTOKEN_FILE=fb374d419588a4632f3f557e76b4b70aebbca790
+TIKTOKEN_SHA256=446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d

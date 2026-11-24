@@ -46,11 +46,26 @@ if [ "$(stat -c %s "$MODELS/$EMBED_FILE" 2>/dev/null)" != "$EMBED_BYTES" ]; then
   mv "$MODELS/$EMBED_FILE.part" "$MODELS/$EMBED_FILE"
 fi
 
+# ---- the token-counting encoding ------------------------------------------------------------------
+# EverOS loads tiktoken's o200k_base at every start and otherwise downloads it into /tmp. With a copy
+# kept here (phone.env points TIKTOKEN_CACHE_DIR at it) it starts without the network.
+T="$E/tiktoken-cache/$TIKTOKEN_FILE"
+if [ "$(sha256sum "$T" 2>/dev/null | cut -d' ' -f1)" != "$TIKTOKEN_SHA256" ]; then
+  mkdir -p "$E/tiktoken-cache"
+  cp "/tmp/data-gym-cache/$TIKTOKEN_FILE" "$T.part" 2>/dev/null || curl -fL --retry 3 -sS -o "$T.part" "$TIKTOKEN_URL" || true
+  if [ "$(sha256sum "$T.part" 2>/dev/null | cut -d' ' -f1)" = "$TIKTOKEN_SHA256" ]; then
+    mv "$T.part" "$T"; log "token-counting encoding stored"
+  else
+    rm -f "$T.part"; log "WARNING: token-counting encoding not stored; EverOS will need the network when it starts"
+  fi
+fi
+
 # ---- scripts, settings, the place the store is delivered to ---------------------------------------
 install -m 755 "$HERE/everos/llama-run.sh" /usr/local/lib/aohp/llama-run.sh
 install -m 755 "$HERE/everos/apply-index.sh" "$E/apply-index.sh"
 install -m 644 "$HERE/everos/align-mtimes.py" "$E/align-mtimes.py"
 [ -f "$E/phone.env" ] || install -m 644 "$HERE/everos/phone.env" "$E/phone.env"   # yours to edit afterwards
+grep -q '^TIKTOKEN_CACHE_DIR=' "$E/phone.env" || echo "TIKTOKEN_CACHE_DIR=$E/tiktoken-cache" >> "$E/phone.env"
 [ -d "$E/root/.git" ] || git init -q -b main "$E/root"
 
 # ---- units ----------------------------------------------------------------------------------------
