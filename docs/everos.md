@@ -29,9 +29,16 @@ units and the scripts. It fetches nothing from the writing host.
 
 ## How the store gets to the phone
 
-A host that reaches both sides carries it: `install/everos/sender/ship-index.sh [phone...]`.
-It needs the writing host to provide an index snapshot (a copy of the store's `.index` with
-`STORE_COMMIT` and `SHA256SUMS`), and a local clone of the store. For each phone it
+The writing host sends it. The files are in `install/everos/sender/`:
+
+| file | what it does |
+|---|---|
+| `snapshot-index.sh` | Copies the store's `.index` to `index-snapshot`, with `STORE_COMMIT` and `SHA256SUMS`. Run after each commit of the store. |
+| `ship-index.sh [phone...]` | Delivers that snapshot and its store commit to each phone. |
+| `ship.conf.example` | The settings of `ship-index.sh`; copy it to `ship.conf` beside the script. |
+| `everos-ship.service`, `everos-ship.timer` | User units: run the delivery now, and every hour for a phone that was off. |
+
+For each phone `ship-index.sh`
 
 - pushes the store commit into `/root/everos/root` as branch `shipped`,
 - copies the index to `/root/everos/index-next` (only files the phone does not have yet),
@@ -39,7 +46,21 @@ It needs the writing host to provide an index snapshot (a copy of the store's `.
   swap the index, restart EverOS (down a few seconds), and go back to the previous index if the
   server does not come up.
 
-The phone holds no key for the writing host. A phone that is off gets the store on a later run.
+A phone that already has the commit is skipped, so an hourly run costs one login. The phone holds
+no key for the writing host.
+
+To set it up on the writing host: copy the two scripts and `ship.conf` to `~/everos`, the units to
+`~/.config/systemd/user`, give each phone an ssh name in `~/.ssh/config` (its address, port 2222,
+user root) and its host key in `~/.ssh/known_hosts`, then `systemctl --user enable --now
+everos-ship.timer`. A phone that was wiped has new host keys; replace its `known_hosts` lines.
+
+**The key.** `EVEROS_SHIP_KEY` in `ship.conf` names the private key the phones accept, and the job
+uses that key only. A login key works. To harden it: make a key for this job alone, allow it in the
+env's `/root/.ssh/authorized_keys` with a `restrict,command=...` line that permits only the
+delivery, and name the new file in `ship.conf`.
+
+A host other than the writing one can deliver too, if it reaches both sides: set `EVEROS_SERVER` to
+the writing host's ssh name and `EVEROS_STORE` to a local clone of the store.
 
 ## Using it
 

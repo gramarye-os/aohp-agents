@@ -1,0 +1,11 @@
+# ship.conf: settings of ship-index.sh on the writing host. Copy to ship.conf beside the script.
+EVEROS_SERVER=local
+EVEROS_SNAPSHOT=$HOME/everos/index-snapshot
+EVEROS_STORE=$HOME/everos/root
+EVEROS_SHIP_DIR=$HOME/everos/ship
+# ssh names of the phones (~/.ssh/config gives each its address, port 2222 and user root)
+EVEROS_PHONES="oneplus13-wg"
+# The private key the phones accept for this job. A login key works. To harden it later: make a key
+# for this job only, allow it on each phone with a "restrict,command=..." line in the env's
+# /root/.ssh/authorized_keys, and name the new file here. Nothing else changes.
+EVEROS_SHIP_KEY=$HOME/.ssh/id_rsa

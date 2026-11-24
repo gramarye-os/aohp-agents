@@ -1,0 +1,9 @@
+[Unit]
+Description=Hourly: bring phones that missed a delivery up to date
+
+[Timer]
+OnCalendar=*:20
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

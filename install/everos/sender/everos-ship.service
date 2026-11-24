@@ -1,0 +1,8 @@
+[Unit]
+Description=Deliver the EverOS store and index to the phones
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash %h/everos/ship-index.sh
+# 2: a phone could not be reached; the next run brings it up to date
+SuccessExitStatus=2
