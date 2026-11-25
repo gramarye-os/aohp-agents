@@ -9,6 +9,8 @@
 #   aohp-gateway reject <id> | remove <id> | rename <id> <label>
 #   aohp-gateway pair-url [iface]  https URL + fingerprint for a browser (default: wg0, else first LAN)
 #   aohp-gateway setup-code        single-use OpenClaw mobile-app setup code (openclaw qr)
+#   aohp-gateway app-code          JSON {setupCode, url, expiresAtMs, fingerprint}: a setup code for the OpenClaw app
+#                                  on THIS phone. It names ws(s)://127.0.0.1:port, so it does not depend on Wi-Fi.
 #   aohp-gateway pair-code [iface]  JSON {url, expiresAtMs, fingerprint}: an https URL carrying a 10-minute
 #                                  bootstrap token in the fragment (#bootstrapToken=…, read by the Control UI, never
 #                                  sent to the server). Scan it on a laptop -> Control UI -> pending device -> Allow.
@@ -114,6 +116,21 @@ PY
     [ -n "$ip" ] || die 'no non-loopback address'
     printf '%s://%s:%s\n' "$(tls_on && echo https || echo http)" "$ip" "$PORT"; fp=$(fingerprint); [ -n "$fp" ] && echo "cert sha256 $fp" ;;
   setup-code) oc qr --setup-code-only ;;
+  app-code)
+    # openclaw qr puts the LAN address in the code; the app on this phone reaches the gateway over loopback.
+    need_port
+    if tls_on; then u="wss://127.0.0.1:$PORT"; fp=$(fingerprint); else u="ws://127.0.0.1:$PORT"; fp=; fi
+    sc=$(oc qr --setup-code-only --url "$u" 2>/dev/null | tail -1); [ -n "$sc" ] || die 'could not mint a setup code (gateway up?)'
+    python3 - "$sc" "$u" "$fp" <<'PY'
+import sys, json, base64
+sc, url, fp = sys.argv[1:4]
+try:
+    p = json.loads(base64.urlsafe_b64decode(sc + "=" * (-len(sc) % 4)))
+except Exception:
+    sys.exit("aohp-gateway: openclaw qr did not return a setup code")
+print(json.dumps({"setupCode": sc, "url": p.get("url") or url, "expiresAtMs": p.get("expiresAtMs"), "fingerprint": fp or None}))
+PY
+    ;;
   pair-code)
     need_port
     want=${2:-wlan0}; ip=$(addrs | awk -v w="$want" '$1==w{print $2; exit}'); [ -n "$ip" ] || ip=$(addrs | awk '{print $2; exit}')
