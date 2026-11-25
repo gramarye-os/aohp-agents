@@ -29,8 +29,14 @@ The agent layer is shared code, not copy-paste: each Dockerfile only does the di
 - Regular files, directories, symlinks and GNU long names only. **Hardlinks and device nodes are skipped** with a
   warning, so the tar is created with `--hard-dereference` and `dev/ proc/ sys/ run/` are shipped empty
   (containerd mounts them). `build-template.sh` fails if the tar contains anything else.
-- Containerd runs everything as root, has no user namespace and does no chown: the tar uses `--numeric-owner`
-  with owner 0:0.
+- Containerd has no user namespace and gives each entry the numeric owner and group in the tar, so the tar uses
+  `--numeric-owner` and keeps the owners of the image (`root:shadow` for `/etc/shadow`, and so on).
+  `build-template.sh` stops when an owner is not an account of the template, and lists the owners that are not
+  `0/0` in `dist/<distro>-<arch>.txt`. An OS build whose containerd has no chown (every released build as of
+  2026-11-24) makes every entry root-owned, whatever the tar says.
+- apt's download directory `/var/cache/apt/archives/partial` is left out of the tar. apt makes it itself, owned by
+  `_apt`. Shipped root-only (an OS build without chown), `_apt` cannot read it and every download ends with
+  "Download is performed unsandboxed as root … Permission denied".
 - **The whole tarball is inflated into RAM on the device.** Keep the uncompressed rootfs ≲ 1.5 GB (sizes are
   recorded in `dist/<distro>-<arch>.txt` and in the release notes).
 

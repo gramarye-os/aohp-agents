@@ -39,7 +39,7 @@ apt-get install -y --no-install-recommends \
 apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
 curl -fL --retry 3 -o /tmp/mesa.tar.gz "$MESA_URL"
 echo "$MESA_SHA256  /tmp/mesa.tar.gz" | sha256sum -c -
-tar xzf /tmp/mesa.tar.gz -C /
+tar xzf /tmp/mesa.tar.gz -C / --no-same-owner
 rm -f /tmp/mesa.tar.gz
 ldconfig
 # An apt upgrade of these would put Debian's files back over ours.

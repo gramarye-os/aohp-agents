@@ -11,7 +11,8 @@
 #   - handles regular files, dirs, symlinks, GNU long names; SKIPS hardlinks and device nodes  -> tar --hard-dereference,
 #     and dev/ proc/ sys/ run/ are shipped empty (containerd mounts them)
 #   - inflates the whole tarball into memory on the device                                   -> keep the rootfs lean
-#   - no chown (everything ends up root-owned); containerd has no user namespace             -> --numeric-owner, owner 0
+#   - gives each entry the numeric owner and group in the tar; containerd has no user namespace -> --numeric-owner.
+#     An OS build whose containerd has no chown (every released build as of 2026-11-24) makes every entry root-owned.
 # arm64 builds run under qemu-user-static binfmt (npm install of OpenClaw takes several minutes there).
 set -euo pipefail
 DISTRO=${1:?distro (debian|fedora|arch)}
@@ -72,7 +73,9 @@ log "image built in $((T1-T0)) s"
 
 # Export: mount the image's rootfs inside the rootless user namespace (uid 0 there == container root) and tar straight
 # from it (the container layer is writable: resolv.conf/hostname are injected there first). Hard links are dereferenced,
-# dev/proc/sys/run are emptied, sockets/fifos dropped, owner forced to 0:0.
+# dev/proc/sys/run are emptied, sockets/fifos dropped, owners kept as the numbers of the template's own accounts.
+# apt's download directory is left out: apt makes it itself, owned by _apt. Shipped in the template it is root-only
+# on an OS build that does no chown, and apt then warns that _apt cannot reach it.
 CID=$(podman create --platform "$PLATFORM" "$TAG" /bin/true)
 trap 'podman rm -f "$CID" >/dev/null 2>&1 || true' EXIT
 log "export $CID -> $OUT"
@@ -90,8 +93,9 @@ podman unshare bash -c '
   DU=$(du -sm . | cut -f1)
   echo "uncompressed_mb=$DU hardlinked_files=$HL special_files=$SPECIAL" > "$INFO"
   echo "[export] uncompressed $DU MB, $HL hardlinked files (dereferenced), $SPECIAL special files (dropped)"
-  tar --format=gnu --hard-dereference --numeric-owner --owner=0 --group=0 \
+  tar --format=gnu --hard-dereference --numeric-owner \
       --exclude=./dev/* --exclude=./proc/* --exclude=./sys/* --exclude=./run/* \
+      --exclude=./var/cache/apt/archives/partial \
       -czf "$OUT" . 2> >(grep -v "socket ignored" >&2 || true)
   cd /; podman umount "$CID" >/dev/null
 ' _ "$CID" "$OUT" "$OUT.info"
@@ -101,6 +105,13 @@ T2=$(date +%s)
 # Sanity: the tar must contain only regular files, dirs and symlinks — no hardlinks (h) or devices (b/c) or fifos (p).
 BAD=$(tar -tvzf "$OUT" | awk '{t=substr($1,1,1); if (t!="-" && t!="d" && t!="l") print}' | head -5)
 [ -z "$BAD" ] || { echo "non-regular entries in $OUT:"; echo "$BAD"; exit 1; }
+# Owners: every uid and gid in the tar must be an account of the template. A number that is not (the build uid of an
+# upstream archive unpacked with its owners) would become a real owner on the device, so the build stops on one.
+LIST=$(mktemp); tar --numeric-owner -tvzf "$OUT" | awk '$2 != "0/0"' > "$LIST"
+UIDS=" $(tar -xzOf "$OUT" ./etc/passwd | cut -d: -f3 | tr '\n' ' ')"; GIDS=" $(tar -xzOf "$OUT" ./etc/group | cut -d: -f3 | tr '\n' ' ')"
+UNKNOWN=$(awk -v U="$UIDS" -v G="$GIDS" '{split($2, o, "/"); if (index(U, " " o[1] " ") == 0 || index(G, " " o[2] " ") == 0) print}' "$LIST")
+OWNERS=$(awk '{c[$2]++} END {for (k in c) printf "%s=%d ", k, c[k]}' "$LIST"); rm -f "$LIST"
+[ -z "$UNKNOWN" ] || { echo "owners in $OUT that are not accounts of the template ($(echo "$UNKNOWN" | wc -l) entries), first ones:"; echo "$UNKNOWN" | head -8; exit 1; }
 SIZE=$(stat -c %s "$OUT")
 SHA=$(sha256sum "$OUT" | cut -d' ' -f1)
 VERS=$(podman run --rm --platform "$PLATFORM" "$TAG" bash -c '. /etc/os-release; echo "$PRETTY_NAME | glibc $(ldd --version | head -1 | grep -oE "[0-9]+\.[0-9]+$") | $(gcc --version | head -1) | node $(node -v) | $(python3 -V) | openclaw $(NODE_OPTIONS=--jitless openclaw --version 2>/dev/null | tail -1) | libc $(readelf -n $(ldd /bin/sh | grep -oE "/[^ ]*libc.so.6") | grep -oE "OS: Linux, ABI: [0-9.]+" || true)"' 2>/dev/null || echo "?")
@@ -109,6 +120,7 @@ VERS=$(podman run --rm --platform "$PLATFORM" "$TAG" bash -c '. /etc/os-release;
   echo "built=$(date -Is) build_s=$((T1-T0)) export_s=$((T2-T1)) total_s=$((T2-T0))"
   echo "compressed_bytes=$SIZE sha256=$SHA"
   cat "$OUT.info"
+  echo "non_root_owners(uid/gid=entries)=${OWNERS:-none}"
   echo "versions=$VERS"
   echo "node=$NODE_VERSION openclaw=$OPENCLAW_VERSION aohp_agents_ref=$AOHP_AGENTS_REF aohp_ref=$AOHP_REF"
   [ "$DISTRO" != debian ] || echo "tessera_ref=$TESSERA_REF${VARIANT:+ mesa_sha256=$MESA_SHA256}"

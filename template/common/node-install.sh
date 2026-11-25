@@ -14,7 +14,8 @@ echo "[node] $NODE_VERSION $NODE_ARCH"
 curl -fsSLO "https://nodejs.org/dist/$NODE_VERSION/$TARBALL"
 curl -fsSL "https://nodejs.org/dist/$NODE_VERSION/SHASUMS256.txt" | grep " $TARBALL$" > SHASUMS256.want
 sha256sum -c SHASUMS256.want
-tar -xJf "$TARBALL" -C /usr/local --strip-components=1 --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/LICENSE'
+# --no-same-owner: the archive's files belong to the uid that built Node (1001), which is no account here.
+tar -xJf "$TARBALL" -C /usr/local --no-same-owner --strip-components=1 --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/LICENSE'
 rm -f "$TARBALL" SHASUMS256.want
 rm -rf /usr/local/include/node /usr/local/share/doc/node   # headers only matter for node-gyp builds (npm installs its own on demand)
 node -v; npm -v
